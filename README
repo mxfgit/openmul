@@ -12,7 +12,7 @@
     a) For Ubuntu 10.04.3 LTS, the following packages should be installed :
    
        > sudo apt-get install flex bison libwxgtk2.6-dev build-essential 
-         expect g++-multilib tofrodos zlib1g-dev gawk libffi-dev
+         expect g++-multilib tofrodos zlib1g-dev gawk libffi-dev gettext
 
        Not verified with recent ubuntu versions but should work fine.
 
