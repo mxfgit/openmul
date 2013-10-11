@@ -413,6 +413,7 @@ of_switch_put(c_switch_t *sw)
     if (atomic_read(&sw->ref) == 0){
         c_log_debug("sw (0x:%llx) freed", sw->DPID);
         of_switch_flow_tbl_delete(sw);
+
         if (sw->fp_ops.fp_db_dtor) {
             sw->fp_ops.fp_db_dtor(sw);
         }

@@ -673,7 +673,6 @@ mul_get_flow_info(void *service, uint64_t dpid, bool flow_self,
     struct c_ofp_auxapp_cmd *cofp_auc;
     struct c_ofp_req_dpid_attr *cofp_rda;
     struct c_ofp_flow_info *cofp_fi;
-    nbapi_resp_show_of_flow_t *nbapi_flow_resp = NULL;
     struct ofp_header *h;
     int n_flows = 0;
 
@@ -684,18 +683,6 @@ mul_get_flow_info(void *service, uint64_t dpid, bool flow_self,
         return -1;
     }
 
-    if (nbapi_cmd) {
-        if (dump_cmd) {
-            c_log_err("%s: Invalid args", FN);
-            return -1;
-        }
-        nbapi_flow_resp = calloc(1, sizeof(*nbapi_flow_resp));
-        if (!nbapi_flow_resp) {
-            c_log_err("%s: nbapi msg alloc failed", FN);
-            return -1;
-        }
-        nbapi_flow_resp->header.type = NB_SHOW_OF_SWITCH_FLOW;
-    }
 
     b = of_prep_msg(sizeof(*cofp_auc) + sizeof(*cofp_rda),
                     C_OFPT_AUX_CMD, 0);

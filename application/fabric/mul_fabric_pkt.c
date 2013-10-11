@@ -202,16 +202,17 @@ fab_arp_rcv(void *opq, fab_struct_t *fab_ctx UNUSED, c_ofp_packet_in_t *pin)
     /* Controller does all packet length and other validations
      * so we can ignore doing those
      */
-    arp = (void *)(pin->data + sizeof(struct eth_header)); 
+    arp = (void *)(pin->data + sizeof(struct eth_header)  +
+                   (pin->fl.dl_vlan ? VLAN_HEADER_LEN : 0));
 
     /* Here we don't care  to learn a host from gratutious arp
      * as we will learn the host before arp_rcv()
      */
     if (arp->ar_pro != htons(ARP_PRO_IP) || 
         arp->ar_pln != IP_ADDR_LEN ||
-        arp->ar_op != htons(ARP_OP_REQUEST ||
+        arp->ar_op != htons(ARP_OP_REQUEST) ||
         (arp->ar_spa == arp->ar_tpa &&
-        eth_addr_is_zero(arp->ar_tha)))) {
+        eth_addr_is_zero(arp->ar_tha))) {
         return;
     }
 

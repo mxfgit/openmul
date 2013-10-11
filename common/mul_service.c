@@ -152,7 +152,9 @@ c_service_wait_response(mul_service_t *service)
         c_log_debug("Service(%s) connection Broken..\n", service->service_name);
         perror("c_service_wait_repsonse");
         if (service->conn.cbuf) {
-            free_cbuf(service->conn.cbuf);
+            service->conn.cbuf = NULL;
+            /* We really don't need to free here */
+            /* free_cbuf(service->conn.cbuf); */
         }
         c_service_reconnect(service);
         return NULL;

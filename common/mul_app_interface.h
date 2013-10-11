@@ -38,6 +38,7 @@ extern initcall_t __start_modvtyinit_sec, __stop_modvtyinit_sec;
 #define CLI_APP_NAME "mul-cli"
 #define L2SW_APP_NAME "mul-l2sw"
 #define TR_APP_NAME "mul-tr"
+#define MAKDI_APP_NAME "mul-makdi"
 
 /* Controller app event notifications */
 typedef enum c_app_event {
@@ -274,6 +275,13 @@ struct c_ofp_auxapp_cmd {
 #define C_AUX_CMD_FAB_SHOW_INACTIVE_HOSTS (C_AUX_CMD_FAB_BASE + 4)
 #define C_AUX_CMD_FAB_SHOW_ROUTES (C_AUX_CMD_FAB_BASE + 5)
 #define C_AUX_CMD_FAB_ROUTE (C_AUX_CMD_FAB_BASE + 6)
+#define C_AUX_CMD_HA_BASE (C_AUX_CMD_MUL_CORE_BASE + 3000)
+#define C_AUX_CMD_HA_STATE (C_AUX_CMD_HA_BASE + 1)
+#define C_AUX_CMD_HA_REQ_STATE (C_AUX_CMD_HA_BASE + 2)
+#define C_AUX_CMD_HA_STATE_RESP (C_AUX_CMD_HA_BASE + 3)
+#define C_AUX_CMD_MAKDI_BASE (C_AUX_CMD_MUL_CORE_BASE + 4000) 
+#define C_AUX_CMD_MAKDI_USER_ADD (C_AUX_CMD_MAKDI_BASE + 1) 
+#define C_AUX_CMD_MAKDI_USER_DEL (C_AUX_CMD_MAKDI_BASE + 2) 
     uint32_t            cmd_code;
     uint32_t            pad;
     uint8_t             data[0];
@@ -350,6 +358,15 @@ struct c_ofp_ha_state {
 };
 OFP_ASSERT(sizeof(struct c_ofp_ha_state) == 8);
 
+struct c_ofp_s_chain_mod {
+    struct c_ofp_host_mod      user_info;
+    uint64_t                   num_nfvs;
+#define MAX_NFV 10
+#define MAX_NFV_NAME 64
+    char                       nfv_list[MAX_NFV][MAX_NFV_NAME];    
+};
+OFP_ASSERT(sizeof(struct c_ofp_s_chain_mod) == 696);
+
 #define C_OFP_ERR_CODE_BASE (100)
 
 /* More bad request codes */
@@ -395,6 +412,7 @@ typedef struct c_ofp_host_mod c_ofp_host_mod_t;
 typedef struct c_ofp_route c_ofp_route_t;
 typedef struct c_ofp_route_link c_ofp_route_link_t;
 typedef struct c_ofp_ha_state c_ofp_ha_state_t;
+typedef struct c_ofp_s_chain_mod c_ofp_s_chain_mod_t;
 
 void mul_app_free_buf(void *b);
 int mul_register_app(void *app, char *app_name, uint32_t app_flags,

@@ -288,7 +288,8 @@ c_switch_replay_all(ctrl_hdl_t *hdl, void *app_arg)
                           
     for (iterator = app_replay_q; iterator; iterator = iterator->next) {
         q_ent = iterator->data;
-        if (g_hash_table_lookup(app->dpid_hlist, &(q_ent->sw->DPID))) {
+        if (app->app_flags & C_APP_ALL_SW ||
+            g_hash_table_lookup(app->dpid_hlist, &(q_ent->sw->DPID))) {
             c_signal_app_event(q_ent->sw, q_ent->b, C_DP_REG, app_arg, NULL);
         }
         of_switch_put(q_ent->sw);

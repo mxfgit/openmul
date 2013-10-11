@@ -90,6 +90,8 @@ int     c_socket_read_block_loop(int fd, void *arg, c_conn_t *conn,
                                 conn_proc_t proc_msg, int (*get_data_len)(void *),
                                 bool (*validate_hdr)(void *), size_t hdr_sz);
 int     c_socket_write_block_loop(c_conn_t *conn, struct cbuf *buf);
+void    c_conn_tx(void *conn_arg, struct cbuf *b, void (*delay_tx)(void *arg));
+size_t  c_count_one_bits(uint32_t num);
 
 
 static inline int

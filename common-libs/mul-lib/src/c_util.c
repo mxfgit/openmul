@@ -565,6 +565,52 @@ retry:
     goto try_again;
 }
 
+static int
+c_socket_read_chunk_loop(int fd, struct cbuf **orig_b,
+                         c_conn_t *conn, size_t tot_rcv_sz)
+{
+    struct cbuf *b = *orig_b;
+    size_t rd_sz = 0, rem_rcv_sz = tot_rcv_sz;
+
+    if (!b) {
+        return -1;
+    }
+
+read_again:
+    if (cbuf_tailroom(b) < rem_rcv_sz) {
+        struct cbuf *new;
+        new = alloc_cbuf(b->len + rem_rcv_sz);
+        if (b->len) {
+            memcpy(new->data, b->data, b->len);
+            cbuf_put(new, b->len);
+        }
+        free_cbuf(b);
+        b = new;
+    }
+
+    if (conn->conn_type == C_CONN_TYPE_SOCK) {
+        rd_sz = recv(fd, b->tail, rem_rcv_sz, MSG_WAITALL);
+    } else {
+        rd_sz = read(fd, b->tail, rem_rcv_sz);
+    }
+
+    if (rd_sz > rem_rcv_sz) {
+        /* Unexpected */
+        return -1;
+    }
+
+    if (rd_sz <= 0) {
+        return rd_sz;
+    }
+
+    cbuf_put(b, rd_sz);
+    rem_rcv_sz -= rd_sz;
+
+    if (rem_rcv_sz) goto read_again;
+
+    *orig_b = b;
+    return tot_rcv_sz; 
+}
 
 int 
 c_socket_read_block_loop(int fd, void *arg, c_conn_t *conn,
@@ -574,63 +620,69 @@ c_socket_read_block_loop(int fd, void *arg, c_conn_t *conn,
 {
     ssize_t             rd_sz = -1;
     struct cbuf         *b = NULL;
-    size_t              rcv_buf_sz = hdr_sz;
+    size_t              tot_need_rd = hdr_sz, tot_len = 0;
 
     b = alloc_cbuf(max_rcv_buf_sz);
-
-    while (1) {
-        if (!cbuf_tailroom(b)) {
-            struct cbuf *new;
-
-            new = alloc_cbuf(b->len + max_rcv_buf_sz);
-            if (b->len) {
-                memcpy(new->data, b->data, b->len);
-                cbuf_put(new, b->len);
-            }
-            free_cbuf(b);
-            b = new;
-        }
-
-        if (conn->conn_type == C_CONN_TYPE_SOCK) {
-            rd_sz = recv(fd, b->tail, rcv_buf_sz, 0);
-        } else {
-            rd_sz = read(fd, b->tail, rcv_buf_sz);
-        }
-
-        if (rd_sz <= 0) {
-            free_cbuf(b);
-            break;
-        }
-
-        cbuf_put(b, rd_sz);
-
-        if (b->len >= rcv_buf_sz) {
-            if (b->len > hdr_sz) {
-                if (b->len >= get_data_len(b->data)) {
-                    if (!validate_hdr(b->data)) {
-                        printf("%s: Corrupted header", FN);
-                        return 0; /* Close the socket */
-                    }
-
-                    proc_msg(arg, b);
-                    rd_sz = b->len;
-                    /* Note we don't free cbuf here and its upto proc_msg 
-                     * to free cbuf 
-                     */
-                    break;
-                }
-            }
-            rcv_buf_sz = get_data_len(b->data) - hdr_sz;
-            continue;
-        }
-
-        if (b->len < hdr_sz) {
-            rcv_buf_sz = hdr_sz - rd_sz;
-        } else {
-            rcv_buf_sz = get_data_len(b->data) - rd_sz;
-        }
-
+    rd_sz = c_socket_read_chunk_loop(fd, &b, conn, hdr_sz); 
+    if (rd_sz <= 0) {
+        free_cbuf(b);
+        return rd_sz;
     }
 
-    return rd_sz;
+    tot_need_rd = get_data_len(b->data);
+    if (tot_need_rd < hdr_sz) {
+        free_cbuf(b);
+        printf("%s: Buf sz < hdr_sz \n", FN);
+        return 0;
+    }
+
+    if (!validate_hdr(b->data)) {
+        printf("%s: Corrupted header\n", FN);
+        free_cbuf(b);
+        return 0; /* Close the socket */
+    }
+   
+    if (tot_need_rd - hdr_sz) {
+        rd_sz = c_socket_read_chunk_loop(fd, &b, conn, tot_need_rd - hdr_sz);
+        if (rd_sz <= 0) {
+            free_cbuf(b);
+            return rd_sz;
+        }
+    }
+
+    tot_len = b->len;
+    proc_msg(arg, b);
+
+    return tot_len;
+}
+
+void
+c_conn_tx(void *conn_arg, struct cbuf *b,
+          void (*delay_tx)(void *conn))
+{
+    c_conn_t *conn = conn_arg;
+
+    c_wr_lock(&conn->conn_lock);
+
+    if (cbuf_list_queue_len(&conn->tx_q) > 1024) {
+        c_wr_unlock(&conn->conn_lock);
+        free_cbuf(b);
+        return;
+    }
+
+    cbuf_list_queue_tail(&conn->tx_q, b);
+    c_socket_write_nonblock_loop(conn, delay_tx);
+    c_wr_unlock(&conn->conn_lock);
+
+}
+
+size_t
+c_count_one_bits(uint32_t num)
+{
+    int n = 0;
+    while (num > 0) {
+        num &= num-1;
+        n++;
+    }
+    return n;
 }

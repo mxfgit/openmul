@@ -358,8 +358,6 @@ c_app_unref(void *app_arg)
     atomic_dec(&app->ref, 1);
 }
 
-//#define C_PROF_SUPPORT 1 
-
 #ifdef C_PROF_SUPPORT
 uint64_t curr_time;
 
