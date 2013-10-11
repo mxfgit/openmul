@@ -107,6 +107,7 @@ enum node_type
   MUL_NODE,             /* MuL node */
   MULTR_NODE,           /* MuL TR node */
   MULFAB_NODE,          /* MuL Fab node */
+  MULMAKDI_NODE,        /* MuL makdi node */
   VTY_NODE,			    /* Vty node. */
 };
 
