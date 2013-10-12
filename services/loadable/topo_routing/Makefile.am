@@ -45,6 +45,6 @@ multr_LDADD = $(top_srcdir)/common-libs/3rd-party/derived-lib/.libs/libutil.a  \
                 $(top_srcdir)/common-libs/3rd-party/quagga-lib/.libs/libzebra.a \
                 $(top_srcdir)/common-libs/mul-lib/.libs/libmulutil.a 
 
-multr_LDFLAGS = $(LD_FLAGS) -lpthread -lglib-2.0 -levent -lcrypt -lmultr
+multr_LDFLAGS = $(LD_FLAGS) -lpthread -lglib-2.0 -levent -lcrypt -lmultr -lrt
 
 noinst_HEADERS = mul_lldp_pkt.h mul_lldp_vty.h mul_lldp_hash.h mul_lldp_common.h mul_lldp_debug.h mul_tr.h mul_tr_common.h
