@@ -17,6 +17,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  */
 #include "mul_common.h"
+#include <sys/poll.h>
 
 char *__server = "127.0.0.1";
 
@@ -138,29 +139,46 @@ struct cbuf *
 c_service_wait_response(mul_service_t *service)
 {
     int ret = 0;
+    struct pollfd pfd;
 
     if (service->conn.dead) return NULL;
     service->conn.cbuf = NULL;
 
-    ret = c_socket_read_block_loop(service->conn.fd, service, 
+    pfd.fd = service->conn.fd;
+    pfd.events = POLLIN;
+
+    ret = poll(&pfd, 1, C_SERV_MSG_TIMEO_MS);
+    if (ret == -1) {
+        perror("poll");
+        c_service_reconnect(service);
+        return NULL;
+    } else if (ret == 0) {
+        c_log_debug("%s:Timeout!", FN);
+    } else {
+        if (pfd.revents & POLLIN) {
+            ret = c_socket_read_block_loop(service->conn.fd, service, 
                                    &service->conn,
                                    C_SERV_RCV_BUF_SZ,
                                    (conn_proc_t)(c_service_fetch_response),
                                    of_get_data_len, c_app_of_hdr_valid,
                                    sizeof(struct ofp_header));
-    if (c_recvd_sock_dead(ret)) {
-        c_log_debug("Service(%s) connection Broken..\n", service->service_name);
-        perror("c_service_wait_repsonse");
-        if (service->conn.cbuf) {
-            service->conn.cbuf = NULL;
-            /* We really don't need to free here */
-            /* free_cbuf(service->conn.cbuf); */
+            if (c_recvd_sock_dead(ret)) {
+                c_log_debug("Service(%s) connection Broken..\n", service->service_name);
+                perror("c_service_wait_repsonse");
+                if (service->conn.cbuf) {
+                    free_cbuf(service->conn.cbuf);
+                    service->conn.cbuf = NULL;
+                }
+                c_service_reconnect(service);
+                return NULL;
+            }
+            return service->conn.cbuf;
         }
-        c_service_reconnect(service);
         return NULL;
-    } else {
-        return service->conn.cbuf;
     }
+
+    /* NOT Reached */
+    return NULL;
 }
 
 static void

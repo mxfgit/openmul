@@ -35,6 +35,7 @@
 #define MUL_FAB_CLI_SERVICE_NAME  "mul-fab-cli"
 #define MUL_CORE_SERVICE_NAME     "mul-core"
 #define MUL_CORE_HA_SERVICE_NAME  "mul-ha-serv"
+#define MUL_MAKDI_SERVICE_NAME    "mul-makdi"
 
 #define MAX_SWITCHES_PER_CLUSTER  (128)
 
@@ -47,6 +48,9 @@
 #define MUL_MAKDI_CLI_PORT 12348
 
 #define C_SERV_RCV_BUF_SZ 4096
+
+#define C_SERV_MSG_TIMEO_MS (1000)
+#define C_SERV_RETRY_CNT 3
 
 struct mul_service
 {

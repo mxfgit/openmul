@@ -461,6 +461,10 @@ c_new_conn_to_thread(struct c_main_ctx *m_ctx, int new_conn_fd,
             ipc_t_msg->aux_conn_valid = 1;
         }
         break;
+    case C_EVENT_NEW_HA_CONN:
+        free(ipc_hdr);
+        c_log_err("ipc type not implemented");
+        return -1;
     }
 
     return c_send_unicast_ipc_msg(ipc_wr_fd, ipc_hdr); 

@@ -675,6 +675,8 @@ mul_get_flow_info(void *service, uint64_t dpid, bool flow_self,
     struct c_ofp_flow_info *cofp_fi;
     struct ofp_header *h;
     int n_flows = 0;
+    struct cbuf_head bufs;
+    int retries = 0;
 
     if (!service) return -1;
 
@@ -683,7 +685,9 @@ mul_get_flow_info(void *service, uint64_t dpid, bool flow_self,
         return -1;
     }
 
+    cbuf_list_head_init(&bufs);
 
+try_again:
     b = of_prep_msg(sizeof(*cofp_auc) + sizeof(*cofp_rda),
                     C_OFPT_AUX_CMD, 0);
 
@@ -704,28 +708,41 @@ mul_get_flow_info(void *service, uint64_t dpid, bool flow_self,
                 break;
             }
             cofp_fi = (void *)(b->data);
-
             if (ntohs(cofp_fi->header.length) < sizeof(*cofp_fi)) {
                 free_cbuf(b);
-                break;
-
+                goto try_restart;
             } 
 
-            if (!dump_cmd) {
-                if (!nbapi_cmd) {
-                    mul_dump_single_flow(cofp_fi, arg, cb_fn);
-                } else {
-                	cb_fn(arg, cofp_fi);
-                }
-            } else {
-                mul_dump_single_flow_cmd(cofp_fi, arg, cb_fn);
-            }
-            free_cbuf(b);
+            b = cbuf_realloc_headroom(b, 0, true);
+            cbuf_list_queue_tail(&bufs, b);
             n_flows++;
         } else {
-            break;
+            goto try_restart;
         }
     }
 
+    while ((b = cbuf_list_dequeue(&bufs))) {
+        cofp_fi = (void *)(b->data);
+        if (!dump_cmd) {
+            if (!nbapi_cmd) {
+                mul_dump_single_flow(cofp_fi, arg, cb_fn);
+            } else {
+                cb_fn(arg, cofp_fi);
+            }
+        } else {
+            mul_dump_single_flow_cmd(cofp_fi, arg, cb_fn);
+        }
+        free_cbuf(b);
+    }
     return n_flows;
+
+try_restart:
+    cbuf_list_purge(&bufs);
+    if (retries++ >= C_SERV_RETRY_CNT) {
+        cbuf_list_purge(&bufs);
+        c_log_err("%s: Restarting serv msg", FN);
+        goto try_again;
+    }
+    c_log_err("%s: Can't restart serv msg", FN);
+    return 0;
 }

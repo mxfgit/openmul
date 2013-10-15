@@ -20,6 +20,8 @@
 #ifndef __MUL_EVENTS_H__
 #define __MUL_EVENTS_H__
 
+#define C_MUL_TX_BUF_SZ (20480)
+
 /* Cast to struct event */
 #define C_EVENT(x) ((struct event *)(x))
 
@@ -125,7 +127,7 @@ c_thread_tx(void *conn_arg, struct cbuf *b, bool only_q)
     c_conn_t *conn = conn_arg;
 
     c_wr_lock(&conn->conn_lock);
-    if (cbuf_list_queue_len(&conn->tx_q)  > C_TX_BUF_SZ) {
+    if (cbuf_list_queue_len(&conn->tx_q)  > C_MUL_TX_BUF_SZ) {
         c_wr_unlock(&conn->conn_lock);
         free_cbuf(b);
         return;
@@ -152,7 +154,7 @@ c_thread_tx(void *conn_arg, struct cbuf *b, bool only_q UNUSED)
     c_conn_t *conn = conn_arg;
 
     c_wr_lock(&conn->conn_lock);
-    if (cbuf_list_queue_len(&conn->tx_q)  > C_TX_BUF_SZ) {
+    if (cbuf_list_queue_len(&conn->tx_q)  > C_MUL_TX_BUF_SZ) {
         c_wr_unlock(&conn->conn_lock);
         free_cbuf(b);
         return;
@@ -174,7 +176,7 @@ c_thread_chain_tx(void *conn_arg, struct cbuf **b, size_t nbufs)
     int n;
 
     c_wr_lock(&conn->conn_lock);
-    if (cbuf_list_queue_len(&conn->tx_q) + nbufs  > C_TX_BUF_SZ) {
+    if (cbuf_list_queue_len(&conn->tx_q) + nbufs  > C_MUL_TX_BUF_SZ) {
         c_wr_unlock(&conn->conn_lock);
         goto free_all;
     }
