@@ -33,49 +33,10 @@
 
 /* OpenFlow: protocol between controller and datapath. */
 
-#ifndef OPENFLOW_OPENFLOW_H
-#define OPENFLOW_OPENFLOW_H 1
+#ifndef OPENFLOW_OPENFLOW10_H
+#define OPENFLOW_OPENFLOW10_H 1
 
-#ifdef __KERNEL__
-#include <linux/types.h>
-#else
-#include <stdint.h>
-#endif
-
-#ifdef SWIG
-#define OFP_ASSERT(EXPR)        /* SWIG can't handle OFP_ASSERT. */
-#elif !defined(__cplusplus)
-/* Build-time assertion for use in a declaration context. */
-#define OFP_ASSERT(EXPR)                                                \
-        extern int (*build_assert(void))[ sizeof(struct {               \
-                    unsigned int build_assert_failed : (EXPR) ? 1 : -1; })]
-#else /* __cplusplus */
-#define OFP_ASSERT(_EXPR) typedef int build_assert_failed[(_EXPR) ? 1 : -1]
-#endif /* __cplusplus */
-
-#ifndef SWIG
-#define OFP_PACKED __attribute__((packed))
-#else
-#define OFP_PACKED              /* SWIG doesn't understand __attribute. */
-#endif
-
-/* Version number:
- * Non-experimental versions released: 0x01
- * Experimental versions released: 0x81 -- 0x99
- */
-/* The most significant bit being set in the version field indicates an
- * experimental OpenFlow version.
- */
-#define OFP_VERSION     0x01
-#define OFP_VERSION_1_1 0x02
-
-#define OFP_MAX_TABLE_NAME_LEN 32
-#define OFP_MAX_PORT_NAME_LEN  16
-
-#define OFP_TCP_PORT  6633
-#define OFP_SSL_PORT  6633
-
-#define OFP_ETH_ALEN 6          /* Bytes in an Ethernet address. */
+#include "openflow-common.h"
 
 /* Port numbering.  Physical ports are numbered starting from 1. */
 enum ofp_port {
@@ -138,41 +99,6 @@ enum ofp_type {
 
 };
 
-/* Header on all OpenFlow packets. */
-struct ofp_header {
-    uint8_t version;    /* OFP_VERSION. */
-    uint8_t type;       /* One of the OFPT_ constants. */
-    uint16_t length;    /* Length including this ofp_header. */
-    uint32_t xid;       /* Transaction id associated with this packet.
-                           Replies use the same id as was in the request
-                           to facilitate pairing. */
-};
-OFP_ASSERT(sizeof(struct ofp_header) == 8);
-
-/* OFPT_HELLO.  This message has an empty body, but implementations must
- * ignore any data included in the body, to allow for future extensions. */
-struct ofp_hello {
-    struct ofp_header header;
-};
-
-#define OFP_DEFAULT_MISS_SEND_LEN   128
-
-enum ofp_config_flags {
-    /* Handling of IP fragments. */
-    OFPC_FRAG_NORMAL   = 0,  /* No special handling for fragments. */
-    OFPC_FRAG_DROP     = 1,  /* Drop fragments. */
-    OFPC_FRAG_REASM    = 2,  /* Reassemble (only if OFPC_IP_REASM set). */
-    OFPC_FRAG_MASK     = 3
-};
-
-/* Switch configuration. */
-struct ofp_switch_config {
-    struct ofp_header header;
-    uint16_t flags;             /* OFPC_* flags. */
-    uint16_t miss_send_len;     /* Max bytes of new flow that datapath should
-                                   send to the controller. */
-};
-OFP_ASSERT(sizeof(struct ofp_switch_config) == 12);
 
 /* Capabilities supported by the datapath. */
 enum ofp_capabilities {
@@ -276,13 +202,6 @@ struct ofp_switch_features {
 };
 OFP_ASSERT(sizeof(struct ofp_switch_features) == 32);
 
-/* What changed about the physical port */
-enum ofp_port_reason {
-    OFPPR_ADD,              /* The port was added. */
-    OFPPR_DELETE,           /* The port was removed. */
-    OFPPR_MODIFY            /* Some attribute of the port has changed. */
-};
-
 /* A physical port has changed in the datapath */
 struct ofp_port_status {
     struct ofp_header header;
@@ -310,12 +229,6 @@ struct ofp_port_mod {
     uint8_t pad[4];         /* Pad to 64-bits. */
 };
 OFP_ASSERT(sizeof(struct ofp_port_mod) == 32);
-
-/* Why is this packet being sent to the controller? */
-enum ofp_packet_in_reason {
-    OFPR_NO_MATCH,          /* No matching flow. */
-    OFPR_ACTION             /* Action explicitly output to controller. */
-};
 
 /* Packet received on port (datapath -> controller). */
 struct ofp_packet_in {
@@ -347,39 +260,7 @@ enum ofp_action_type {
     OFPAT_SET_TP_SRC,       /* TCP/UDP source port. */
     OFPAT_SET_TP_DST,       /* TCP/UDP destination port. */
     OFPAT_ENQUEUE,          /* Output to queue.  */
-    OFPAT_KULCLOUD,
     OFPAT_VENDOR = 0xffff
-};
-
-enum ofp_action_type_2 {
-    OFPAT_OUTPUT_2, /* Output to switch port. */
-    OFPAT_SET_VLAN_VID_2, /* Set the 802.1q VLAN id. */
-    OFPAT_SET_VLAN_PCP_2, /* Set the 802.1q priority. */
-    OFPAT_SET_DL_SRC_2, /* Ethernet source address. */
-    OFPAT_SET_DL_DST_2, /* Ethernet destination address. */
-    OFPAT_SET_NW_SRC_2, /* IP source address. */
-    OFPAT_SET_NW_DST_2, /* IP destination address. */
-    OFPAT_SET_NW_TOS_2, /* IP ToS (DSCP field, 6 bits). */
-    OFPAT_SET_NW_ECN_2, /* IP ECN (2 bits). */
-    OFPAT_SET_TP_SRC_2, /* TCP/UDP/SCTP source port. */
-    OFPAT_SET_TP_DST_2, /* TCP/UDP/SCTP destination port. */
-    OFPAT_COPY_TTL_OUT_2, /* Copy TTL "outwards" -- from next-to-outermost to
-                            outermost */
-    OFPAT_COPY_TTL_IN_2, /* Copy TTL "inwards" -- from outermost to
-                            next-to-outermost */
-    OFPAT_SET_MPLS_LABEL_2, /* MPLS label */
-    OFPAT_SET_MPLS_TC_2, /* MPLS TC */
-    OFPAT_SET_MPLS_TTL_2, /* MPLS TTL */
-    OFPAT_DEC_MPLS_TTL_2, /* Decrement MPLS TTL */
-    OFPAT_PUSH_VLAN_2, /* Push a new VLAN tag */
-    OFPAT_POP_VLAN_2, /* Pop the outer VLAN tag */
-    OFPAT_PUSH_MPLS_2, /* Push a new MPLS tag */
-    OFPAT_POP_MPLS_2, /* Pop the outer MPLS tag */
-    OFPAT_SET_QUEUE_2, /* Set queue id when outputting to a port */
-    OFPAT_GROUP_2, /* Apply group. */
-    OFPAT_SET_NW_TTL_2, /* IP TTL. */
-    OFPAT_DEC_NW_TTL_2, /* Decrement IP TTL. */
-    OFPAT_EXPERIMENTER = 0xffff
 };
 
 /* Action structure for OFPAT_OUTPUT, which sends packets out 'port'.
@@ -398,7 +279,6 @@ OFP_ASSERT(sizeof(struct ofp_action_output) == 8);
  * special conditions.  All ones is used to match that no VLAN id was
  * set. */
 #define OFP_VLAN_NONE      0xffff
-
 /* Action structure for OFPAT_SET_VLAN_VID. */
 struct ofp_action_vlan_vid {
     uint16_t type;                  /* OFPAT_SET_VLAN_VID. */
@@ -419,9 +299,9 @@ OFP_ASSERT(sizeof(struct ofp_action_vlan_pcp) == 8);
 
 /* Action structure for OFPAT_SET_DL_SRC/DST. */
 struct ofp_action_dl_addr {
-    uint16_t type;                  /* OFPAT_SET_DL_SRC/DST. */
-    uint16_t len;                   /* Length is 16. */
-    uint8_t dl_addr[OFP_ETH_ALEN];  /* Ethernet address. */
+    uint16_t type; /* OFPAT_SET_DL_SRC/DST. */
+    uint16_t len; /* Length is 16. */
+    uint8_t dl_addr[OFP_ETH_ALEN]; /* Ethernet address. */
     uint8_t pad[6];
 };
 OFP_ASSERT(sizeof(struct ofp_action_dl_addr) == 16);
@@ -470,20 +350,6 @@ struct ofp_action_kulcloud {
 OFP_ASSERT(sizeof(struct ofp_action_kulcloud) == 8);
 
 
-
-/* Action header that is common to all actions.  The length includes the
- * header and any padding used to make the action 64-bit aligned.
- * NB: The length of an action *must* always be a multiple of eight. */
-struct ofp_action_header {
-    uint16_t type;                  /* One of OFPAT_*. */
-    uint16_t len;                   /* Length of action, including this
-                                       header.  This is the length of action,
-                                       including any padding to make it
-                                       64-bit aligned. */
-    uint8_t pad[4];
-};
-OFP_ASSERT(sizeof(struct ofp_action_header) == 8);
-
 /* Send packet (controller -> datapath). */
 struct ofp_packet_out {
     struct ofp_header header;
@@ -496,14 +362,6 @@ struct ofp_packet_out {
                                      (Only meaningful if buffer_id == -1.) */
 };
 OFP_ASSERT(sizeof(struct ofp_packet_out) == 16);
-
-enum ofp_flow_mod_command {
-    OFPFC_ADD,              /* New flow. */
-    OFPFC_MODIFY,           /* Modify all matching flows. */
-    OFPFC_MODIFY_STRICT,    /* Modify entry strictly matching wildcards */
-    OFPFC_DELETE,           /* Delete all matching flows. */
-    OFPFC_DELETE_STRICT    /* Strictly match wildcards and priority. */
-};
 
 /* Flow wildcards. */
 enum ofp_flow_wildcards {
@@ -536,22 +394,6 @@ enum ofp_flow_wildcards {
 
     /* Wildcard all fields. */
     OFPFW_ALL = ((1 << 22) - 1)
-};
-
-/* Flow wildcards. */
-enum ofp_flow_wildcards_2 {
-    OFPFW_IN_PORT_2 = 1 << 0, /* Switch input port. */
-    OFPFW_DL_VLAN_2 = 1 << 1, /* VLAN id. */
-    OFPFW_DL_VLAN_PCP_2 = 1 << 2, /* VLAN priority. */
-    OFPFW_DL_TYPE_2 = 1 << 3, /* Ethernet frame type. */
-    OFPFW_NW_TOS_2 = 1 << 4, /* IP ToS (DSCP field, 6 bits). */
-    OFPFW_NW_PROTO_2 = 1 << 5, /* IP protocol. */
-    OFPFW_TP_SRC_2 = 1 << 6, /* TCP/UDP/SCTP source port. */
-    OFPFW_TP_DST_2 = 1 << 7, /* TCP/UDP/SCTP destination port. */
-    OFPFW_MPLS_LABEL_2 = 1 << 8, /* MPLS label. */
-    OFPFW_MPLS_TC_2 = 1 << 9, /* MPLS TC. */
-    /* Wildcard all fields. */
-    OFPFW_ALL_2 = ((1 << 10) - 1)
 };
 
 /* The wildcards for ICMP type and code fields use the transport source
@@ -596,105 +438,6 @@ struct ofp_match {
 };
 OFP_ASSERT(sizeof(struct ofp_match) == 40);
 
-enum ofp_instruction_type {
-    OFPIT_GOTO_TABLE = 1, /* Setup the next table in the lookup
-                            pipeline */
-    OFPIT_WRITE_METADATA = 2, /* Setup the metadata field for use later in
-                                 pipeline */
-    OFPIT_WRITE_ACTIONS = 3, /* Write the action(s) onto the datapath action
-                                set */
-    OFPIT_APPLY_ACTIONS = 4, /* Applies the action(s) immediately */
-    OFPIT_CLEAR_ACTIONS = 5, /* Clears all actions from the datapath
-                                action set */
-    OFPIT_EXPERIMENTER = 0xFFFF /* Experimenter instruction */
-};
-
-/* Instruction structure for OFPIT_GOTO_TABLE */
-struct ofp_instruction_goto_table {
-    uint16_t type; /* OFPIT_GOTO_TABLE */
-    uint16_t len; /* Length of this struct in bytes. */
-    uint8_t table_id; /* Set next table in the lookup pipeline */
-    uint8_t pad[3]; /* Pad to 64 bits. */
-};
-OFP_ASSERT(sizeof(struct ofp_instruction_goto_table) == 8);
-
-/* Instruction structure for OFPIT_WRITE_METADATA */
-struct ofp_instruction_write_metadata {
-    uint16_t type; /* OFPIT_WRITE_METADATA */
-    uint16_t len; /* Length of this struct in bytes. */
-    uint8_t pad[4]; /* Align to 64-bits */
-    uint64_t metadata; /* Metadata value to write */
-    uint64_t metadata_mask; /* Metadata write bitmask */
-};
-OFP_ASSERT(sizeof(struct ofp_instruction_write_metadata) == 24);
-
-/* Instruction structure for OFPIT_WRITE/APPLY/CLEAR_ACTIONS */
-struct ofp_instruction_actions {
-    uint16_t type; /* One of OFPIT_*_ACTIONS */
-    uint16_t len; /* Length of this struct in bytes. */
-    uint8_t pad[4]; /* Align to 64-bits */
-    struct ofp_action_header actions[0]; /* Actions associated with
-                                            OFPIT_WRITE_ACTIONS and
-                                            OFPIT_APPLY_ACTIONS */
-};
-OFP_ASSERT(sizeof(struct ofp_instruction_actions) == 8);
-
-struct ofp_instruction {
-    uint16_t type; /* OFPIT_*_ACTIONS */
-    uint16_t len;  /* Length of this struct in bytes. */
-    uint8_t  pad[4];
-};
-
-/* The match type indicates the match structure (set of fields that compose the
-* match) in use. The match type is placed in the type field at the beginning
-* of all match structures. The "standard" type corresponds to ofp_match and
-* must be supported by all OpenFlow switches. Extensions that define other
-* match types may be published on the OpenFlow wiki. Support for extensions is
-* optional.
-*/
-enum ofp_match_type {
-    OFPMT_STANDARD, /* The match fields defined in the ofp_match
-                        structure apply */
-};
-
-#define OFPMT_STANDARD_LENGTH 88
-
-/* Fields to match against flows */
-struct ofp_match_2 {
-    uint16_t type; /* One of OFPMT_* */
-    uint16_t length; /* Length of ofp_match */
-    uint32_t in_port; /* Input switch port. */
-    uint32_t wildcards; /* Wildcard fields. */
-    uint8_t dl_src[OFP_ETH_ALEN]; /* Ethernet source address. */
-    uint8_t dl_src_mask[OFP_ETH_ALEN]; /* Ethernet source address mask. */
-    uint8_t dl_dst[OFP_ETH_ALEN]; /* Ethernet destination address. */
-    uint8_t dl_dst_mask[OFP_ETH_ALEN]; /* Ethernet destination address mask. */
-    uint16_t dl_vlan; /* Input VLAN id. */
-    uint8_t dl_vlan_pcp; /* Input VLAN priority. */
-    uint8_t pad1[1]; /* Align to 32-bits */
-    uint16_t dl_type; /* Ethernet frame type. */
-    uint8_t nw_tos; /* IP ToS (actually DSCP field, 6 bits). */
-    uint8_t nw_proto; /* IP protocol or lower 8 bits of
-                        * ARP opcode. */
-    uint32_t nw_src; /* IP source address. */
-    uint32_t nw_src_mask; /* IP source address mask. */
-    uint32_t nw_dst; /* IP destination address. */
-    uint32_t nw_dst_mask; /* IP destination address mask. */
-    uint16_t tp_src; /* TCP/UDP/SCTP source port. */
-    uint16_t tp_dst; /* TCP/UDP/SCTP destination port. */
-    uint32_t mpls_label; /* MPLS label. */
-    uint8_t mpls_tc; /* MPLS TC. */
-    uint8_t pad2[3]; /* Align to 64-bits */
-    uint64_t metadata; /* Metadata passed between tables. */
-    uint64_t metadata_mask; /* Mask for metadata. */
-};
-OFP_ASSERT(sizeof(struct ofp_match_2) == OFPMT_STANDARD_LENGTH);
-
-/* The match fields for ICMP type and code use the transport source and
- * destination port fields, respectively. */
-//#define icmp_type tp_src
-//#define icmp_code tp_dst
-
 /* Value used in "idle_timeout" and "hard_timeout" to indicate that the entry
  * is permanent. */
 #define OFP_FLOW_PERMANENT 0
@@ -733,46 +476,6 @@ struct ofp_flow_mod {
 };
 OFP_ASSERT(sizeof(struct ofp_flow_mod) == 72);
 
-
-/* Flow setup and teardown (controller -> datapath). */
-struct ofp_flow_mod_2 {
-    struct ofp_header header;
-    uint64_t cookie; /* Opaque controller-issued identifier. */
-    uint64_t cookie_mask; /* Mask used to restrict the cookie bits
-                that must match when the command is
-                OFPFC_MODIFY* or OFPFC_DELETE*. A value
-                of 0 indicates no restriction. */
-    /* Flow actions. */
-    uint8_t table_id; /* ID of the table to put the flow in */
-    uint8_t command; /* One of OFPFC_*. */
-    uint16_t idle_timeout; /* Idle time before discarding (seconds). */
-    uint16_t hard_timeout; /* Max time before discarding (seconds). */
-    uint16_t priority; /* Priority level of flow entry. */
-    uint32_t buffer_id; /* Buffered packet to apply to (or -1).
-                Not meaningful for OFPFC_DELETE*. */
-    uint32_t out_port; /* For OFPFC_DELETE* commands, require
-                matching entries to include this as an
-                output port. A value of OFPP_ANY
-                indicates no restriction. */
-    uint32_t out_group; /* For OFPFC_DELETE* commands, require
-                matching entries to include this as an
-                output group. A value of OFPG_ANY
-                indicates no restriction. */
-    uint16_t flags; /* One of OFPFF_*. */
-    uint8_t pad[2];
-    struct ofp_match_2 match; /* Fields to match */
-    struct ofp_instruction instructions[0]; /* Instruction set */
-};
-
-OFP_ASSERT(sizeof(struct ofp_flow_mod_2) == 136);
-
-/* Why was this flow removed? */
-enum ofp_flow_removed_reason {
-    OFPRR_IDLE_TIMEOUT,         /* Flow idle time exceeded idle_timeout. */
-    OFPRR_HARD_TIMEOUT,         /* Time exceeded hard_timeout. */
-    OFPRR_DELETE                /* Evicted by a DELETE flow mod. */
-};
-
 /* Flow removed (datapath -> controller). */
 struct ofp_flow_removed {
     struct ofp_header header;
@@ -803,13 +506,6 @@ enum ofp_error_type {
     OFPET_FLOW_MOD_FAILED,      /* Problem modifying flow entry. */
     OFPET_PORT_MOD_FAILED,      /* Port mod request failed. */
     OFPET_QUEUE_OP_FAILED       /* Queue operation failed. */
-};
-
-/* ofp_error_msg 'code' values for OFPET_HELLO_FAILED.  'data' contains an
- * ASCII text string that may give failure details. */
-enum ofp_hello_failed_code {
-    OFPHFC_INCOMPATIBLE,        /* No compatible version. */
-    OFPHFC_EPERM                /* Permissions error. */
 };
 
 /* ofp_error_msg 'code' values for OFPET_BAD_REQUEST.  'data' contains at least
@@ -870,17 +566,6 @@ enum ofp_queue_op_failed_code {
     OFPQOFC_EPERM               /* Permissions error. */
 };
 
-/* OFPT_ERROR: Error message (datapath -> controller). */
-struct ofp_error_msg {
-    struct ofp_header header;
-
-    uint16_t type;
-    uint16_t code;
-    uint8_t data[0];          /* Variable-length data.  Interpreted based
-                                 on the type and code. */
-};
-OFP_ASSERT(sizeof(struct ofp_error_msg) == 12);
-
 enum ofp_stats_types {
     /* Description of this OpenFlow switch.
      * The request body is empty.
@@ -938,19 +623,6 @@ struct ofp_stats_reply {
     uint8_t body[0];            /* Body of the reply. */
 };
 OFP_ASSERT(sizeof(struct ofp_stats_reply) == 12);
-
-#define DESC_STR_LEN   256
-#define SERIAL_NUM_LEN 32
-/* Body of reply to OFPST_DESC request.  Each entry is a NULL-terminated
- * ASCII string. */
-struct ofp_desc_stats {
-    char mfr_desc[DESC_STR_LEN];       /* Manufacturer description. */
-    char hw_desc[DESC_STR_LEN];        /* Hardware description. */
-    char sw_desc[DESC_STR_LEN];        /* Software description. */
-    char serial_num[SERIAL_NUM_LEN];   /* Serial number. */
-    char dp_desc[DESC_STR_LEN];        /* Human readable description of datapath. */
-};
-OFP_ASSERT(sizeof(struct ofp_desc_stats) == 1056);
 
 /* Body for ofp_stats_request of type OFPST_FLOW. */
 struct ofp_flow_stats_request {

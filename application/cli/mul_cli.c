@@ -20,6 +20,30 @@
 
 cli_struct_t *cli;
 
+static int cli_init_mul_service(cli_struct_t *cli, struct vty *vty);
+static void cli_core_closed(void);
+static void cli_core_reconn(void);
+
+struct mul_app_client_cb cli_app_cbs = {
+    .core_conn_closed = cli_core_closed,
+    .core_conn_reconn = cli_core_reconn
+};
+
+static void
+cli_core_closed(void)
+{
+    c_log_info("%s: ", FN);
+    return;
+}
+
+static void
+cli_core_reconn(void)
+{
+    c_log_info("%s: ", FN);
+    mul_register_app_cb(NULL, CLI_APP_NAME, C_APP_ALL_SW, C_DP_REG | C_DP_UNREG,
+                        0, NULL, &cli_app_cbs);
+}
+
 /**
  * nbapi_dump -
  */
@@ -107,46 +131,13 @@ vty_dump(void *vty, void *pbuf)
  *
  * Handler for error notifications from controller/switch 
  */
-static void
+static void UNUSED
 cli_recv_err_msg(cli_struct_t *cli UNUSED, c_ofp_error_msg_t *cofp_err)
 {
     c_log_err("%s: Controller sent error type %hu code %hu", FN,
                ntohs(cofp_err->type), ntohs(cofp_err->code));
 
     /* FIXME : Handle errors */
-}
-
-
-/**
- * cli_event_notifier -
- *
- * Main Handler for all network and controller events 
- */
-static void
-cli_event_notifier(void *opq UNUSED, void *pkt_arg)
-{
-    struct cbuf         *b = pkt_arg;
-    struct ofp_header   *hdr;
-    uint64_t            dpid = 0;
-
-    if (!b) {
-        c_log_err("%s: Invalid arg", FN);
-        return;
-    }
-
-    hdr = (void *)(b->data);
-
-    switch(hdr->type) {
-    case C_OFPT_RECONN_APP:
-        mul_register_app(NULL, CLI_APP_NAME, 0, 0, 1, &dpid, cli_event_notifier);
-        break;
-    case C_OFPT_NOCONN_APP:
-        break;
-    case C_OFPT_ERR_MSG:
-        cli_recv_err_msg(cli, (void *)hdr);    
-    default:
-        return;
-    }
 }
 
 static void
@@ -270,7 +261,6 @@ void
 cli_module_init(void *base_arg)
 {
     struct event_base *base = base_arg;
-    uint64_t dpid = 0;
     struct timeval update_tv = { CLI_TIMER_INIT_TS, CLI_TIMER_INIT_TUS };
     
     c_log_debug("%s", FN);
@@ -307,7 +297,8 @@ cli_module_init(void *base_arg)
     cli->timer_event = evtimer_new(base, cli_timer, (void *)cli);
     evtimer_add(cli->timer_event, &update_tv);
 
-    mul_register_app(NULL, CLI_APP_NAME, 0, 0, 1, &dpid, cli_event_notifier);
+    mul_register_app_cb(NULL, CLI_APP_NAME, C_APP_ALL_SW, C_DP_REG | C_DP_UNREG,
+                        0, NULL, &cli_app_cbs);
 
     return;
 }
@@ -601,125 +592,73 @@ DEFUN (show_of_flow_all_static,
     return CMD_SUCCESS;
 }
 
-
 DEFUN (of_flow_vty_del,
        of_flow_vty_del_cmd,
-       "of-flow del switch X dip A.B.C.D/M sip A.B.C.D/M proto (<0-255>|*) "
+       "of-flow del switch X smac (X|*) dmac (X|*) eth-type (<0-65535>|*) vid (<0-4095>|*)"
+       " vlan-pcp (<0-7>|*) dip A.B.C.D/M sip A.B.C.D/M proto (<0-255>|*) "
        "tos (<0-63>|*) dport (<0-65535>|*) sport (<0-65535>|*) "
-       "smac (X|*) dmac (X|*) eth-type (<0-65535>|*) vlan-id (<0-4095>|*)"
-       "vlan-pcp (<0-7>|*) in-port (<0-65535>|*)",
-       "Openflow flow tuple\n"  
+       "in-port (<0-65535>|*) table <0-254>",
+       "OF-Flow configuration\n"
        "Delete\n"
        "openflow-switch\n"
        "datapath-id in 0xXXX format\n"
+       "Enter valid source mac\n"
+       "* for wildcard\n"
+       "destination mac\n"
+       "Enter valid destination mac\n"
+       "OR * for wildcard\n"
+       "ether type\n"
+       "Enter valid ether type\n"
+       "* for wildcard\n"
+       "vlan-id\n"
+       "Enter vlan-id\n"
+       "* for wildcard\n"
+       "vlan pcp\n"
+       "Enter vlan priority\n"
+       "* for wildcard\n"
        "dst-ip/mask\n"
        "Enter valid ip address and mask\n"
        "src-ip/mask\n"
        "Enter valid ip address and mask\n"
        "IP protocol\n"
-       "Enter a valid ip-proto OR * for wildcard\n"
+       "Enter a valid ip-proto\n"
+       "* for wildcard\n"
        "IP TOS\n"
-       "Enter ip-tos value OR * for wildcard\n"
+       "Enter ip-tos value\n"
+       "* for wildcard\n"
        "dst-port\n"
-       "Enter valid dst-port OR * for wildcard\n"
+       "Enter valid dst-port\n"
+       "* for wildcard\n"
        "src-port\n"
-       "Enter valid src port OR * for wildcard\n"
-       "source mac\n"
-       "Enter valid source mac OR * for wildcard\n"
-       "destination mac\n"
-       "Enter valid destination mac OR * for wildcard\n"
-       "ether type\n"
-       "Enter valid ether type OR * for wildcard\n"
-       "vlan-id\n"
-       "Enter vlan-id OR * for wildcard\n"
-       "vlan pcp\n"
-       "Enter vlan priority OR * for wildcard\n"
+       "Enter valid src port\n"
+       "* for wildcard\n"
        "input port\n"
-       "Enter input port index OR * for wildcard\n")
+       "Enter input port index"
+       "* for wildcard\n")
 {
     int                          i;
     uint64_t                     dp_id;
     struct flow                  *flow;
+    struct flow                  *mask;
     int                          ret;
     char                         *mac_str = NULL, *next = NULL;
-    uint32_t                     wildcards = 0;
     struct prefix_ipv4           dst_p, src_p;
     uint32_t                     nmask;
 
     flow = calloc(1, sizeof(*flow));
     assert(flow);
 
+    mask = calloc(1, sizeof(*mask));
+    assert(mask);
+    of_mask_set_no_dc(mask); 
+
     dp_id = strtoull(argv[0], NULL, 16);
 
-    ret = str2prefix(argv[1], (void *)&dst_p);
-    if (ret <= 0) {
-        vty_out (vty, "%% Malformed address%s", VTY_NEWLINE);
-        goto free_err_out;
-    }
-
-    if (dst_p.prefixlen) {
-        nmask   =  make_inet_mask(dst_p.prefixlen);
-        wildcards |= ((32 - dst_p.prefixlen) & ((1 << OFPFW_NW_DST_BITS)-1))
-                                << OFPFW_NW_DST_SHIFT;
+    if (!strncmp(argv[1], "*", strlen(argv[1]))) {
+        memset(flow->dl_src, 0, 6);
+        memset(mask->dl_src, 0, 6);
     } else {
-        wildcards |= OFPFW_NW_DST_ALL;
-        nmask = ~0;
-    }
-
-
-    flow->nw_dst = dst_p.prefix.s_addr & htonl(nmask); 
-
-    ret = str2prefix(argv[2], (void *)&src_p);
-    if (ret <= 0) {
-        vty_out (vty, "%% Malformed address%s", VTY_NEWLINE);
-        goto free_err_out;
-    }
-
-    if (src_p.prefixlen) {
-        nmask   =  (make_inet_mask(src_p.prefixlen));
-        wildcards |= ((32 - src_p.prefixlen) & ((1 << OFPFW_NW_SRC_BITS)-1))
-                                << OFPFW_NW_SRC_SHIFT;
-    } else {
-        wildcards |= OFPFW_NW_SRC_ALL;
-        nmask = ~0;
-    }
-
-    flow->nw_src = src_p.prefix.s_addr & htonl(nmask);
-
-    if (!strncmp(argv[3], "*", strlen(argv[3]))) {
-        flow->nw_proto = 0;
-        wildcards |= OFPFW_NW_PROTO;
-    } else {
-        flow->nw_proto = atoi(argv[3]);
-    }
-
-
-    if (!strncmp(argv[4], "*", strlen(argv[4]))) {
-        flow->nw_tos = 0;
-        wildcards |= OFPFW_NW_TOS;
-    } else {
-        flow->nw_tos = atoi(argv[4]);
-    }
-
-    if (!strncmp(argv[5], "*", strlen(argv[5]))) {
-        flow->tp_dst = 0;
-        wildcards |= OFPFW_TP_DST;
-    } else {
-        flow->tp_dst = htons(atoi(argv[5]));
-    }
-
-    if (!strncmp(argv[6], "*", strlen(argv[6]))) {
-        flow->tp_src = 0; 
-        wildcards |= OFPFW_TP_SRC;
-    } else {
-        flow->tp_src = htons(atoi(argv[6]));
-    }
-
-    if (!strncmp(argv[7], "*", strlen(argv[7]))) {
-        memset(&flow->dl_src, 0, 6);
-        wildcards |= OFPFW_DL_SRC;
-    } else {
-        mac_str = (void *)argv[7];
+        mac_str = (void *)argv[1];
         for (i = 0; i < 6; i++) {
             flow->dl_src[i] = (uint8_t)strtoul(mac_str, &next, 16);
             if(mac_str == next)
@@ -733,12 +672,11 @@ DEFUN (of_flow_vty_del,
         }
     }
 
-
-    if (!strncmp(argv[8], "*", strlen(argv[8]))) {
-        memset(&flow->dl_dst, 0, 6);
-        wildcards |= OFPFW_DL_DST;
+    if (!strncmp(argv[2], "*", strlen(argv[2]))) {
+        memset(flow->dl_dst, 0, 6);
+        memset(mask->dl_dst, 0, 6);
     } else {
-        mac_str = (void *)argv[8];
+        mac_str = (void *)argv[2];
         for (i = 0; i < 6; i++) {
             flow->dl_dst[i] = (uint8_t)strtoul(mac_str, &next, 16);
             if(mac_str == next)
@@ -752,36 +690,132 @@ DEFUN (of_flow_vty_del,
         }
     }
 
-    if (!strncmp(argv[9], "*", strlen(argv[9]))) {
+    if (!strncmp(argv[3], "*", strlen(argv[3]))) {
         flow->dl_type = 0;
-        wildcards |= OFPFW_DL_TYPE;
+        mask->dl_type = 0;
     } else {
-        flow->dl_type = htons(atoi(argv[9]));
+        flow->dl_type = htons(atoi(argv[3]));
+    }
+
+    if (!strncmp(argv[4], "*", strlen(argv[4]))) {
+        flow->dl_vlan = 0;
+        mask->dl_vlan = 0;
+    } else {
+        flow->dl_vlan = htons(atoi(argv[4])); // Check ?
+    }
+
+    if (!strncmp(argv[5], "*", strlen(argv[5]))) {
+        flow->dl_vlan_pcp = 0;
+        mask->dl_vlan_pcp = 0;
+    } else {
+        flow->dl_vlan_pcp = htons(atoi(argv[5])); // Check ?
+    }
+
+    ret = str2prefix(argv[6], (void *)&dst_p);
+    if (ret <= 0) {
+        vty_out (vty, "%% Malformed address%s", VTY_NEWLINE);
+        goto free_err_out;
+    } 
+
+    if (dst_p.prefixlen) {
+        if (flow->dl_type == htons(ETH_TYPE_IP)) {
+            nmask = make_inet_mask(dst_p.prefixlen);
+        } else {
+            vty_out (vty, "dl_type != ETH_TYPE_IP %s", VTY_NEWLINE);
+            goto free_err_out;
+        }
+    } else {
+        nmask = 0;
+    }
+
+    mask->nw_dst = htonl(nmask);
+    flow->nw_dst = dst_p.prefix.s_addr & htonl(nmask);
+
+    ret = str2prefix(argv[7], (void *)&src_p);
+    if (ret <= 0) {
+        vty_out (vty, "%% Malformed address%s", VTY_NEWLINE);
+        goto free_err_out;
+    }
+
+    if (src_p.prefixlen) {
+        if (flow->dl_type == htons(ETH_TYPE_IP)) {
+            nmask = make_inet_mask(src_p.prefixlen);
+        } else {
+            vty_out (vty, "dl_type != ETH_TYPE_IP %s", VTY_NEWLINE);
+            goto free_err_out;
+        }
+    } else {
+        nmask = 0;
+    }
+
+    mask->nw_src = htonl(nmask);
+    flow->nw_src = src_p.prefix.s_addr & htonl(nmask);
+
+    if (!strncmp(argv[8], "*", strlen(argv[8]))) {
+        flow->nw_proto = 0;
+        mask->nw_proto = 0;
+    } else {
+        if (flow->dl_type == htons(ETH_TYPE_IP)) {
+            flow->nw_proto = atoi(argv[8]);
+        } else {
+            vty_out (vty, "dl_type != ETH_TYPE_IP %s", VTY_NEWLINE);
+            goto free_err_out;
+        }
+    }
+
+    if (!strncmp(argv[9], "*", strlen(argv[9]))) {
+        flow->nw_tos = 0;
+        mask->nw_tos = 0;
+    } else {
+        if (flow->dl_type == htons(ETH_TYPE_IP)) {
+            flow->nw_tos = atoi(argv[9]);
+        } else {
+            vty_out (vty, "dl_type != ETH_TYPE_IP %s", VTY_NEWLINE);
+            goto free_err_out;
+        }
     }
 
     if (!strncmp(argv[10], "*", strlen(argv[10]))) {
-        flow->dl_vlan = 0;
-        wildcards |= OFPFW_DL_VLAN;
+        flow->tp_dst = 0;
+        mask->tp_dst = 0;
     } else {
-        flow->dl_vlan = htons(atoi(argv[10])); // Check ? 
+        if (flow->dl_type == htons(ETH_TYPE_IP) &&
+            (flow->nw_proto == IP_TYPE_UDP ||
+            flow->nw_proto == IP_TYPE_TCP)) {
+            flow->tp_dst = htons(atoi(argv[10]));
+        } else {
+            vty_out(vty, "dl_type != ETH_TYPE_IP || ip_type != UDP/TCP %s",
+                     VTY_NEWLINE);
+            goto free_err_out;
+        }
     }
 
     if (!strncmp(argv[11], "*", strlen(argv[11]))) {
-        flow->dl_vlan_pcp = 0;
-        wildcards |= OFPFW_DL_VLAN_PCP;
+        flow->tp_src = 0;
+        mask->tp_src = 0;
     } else {
-        flow->dl_vlan_pcp = htons(atoi(argv[11])); // Check ? 
+        if (flow->dl_type == htons(ETH_TYPE_IP) &&
+            (flow->nw_proto == IP_TYPE_UDP ||
+            flow->nw_proto == IP_TYPE_TCP)) {
+            flow->tp_src = htons(atoi(argv[11]));
+        } else {
+            vty_out(vty, "dl_type != ETH_TYPE_IP || ip_type != UDP/TCP %s",
+                    VTY_NEWLINE);
+            goto free_err_out;
+        }
     }
 
     if (!strncmp(argv[12], "*", strlen(argv[12]))) {
         flow->in_port = 0;
-        wildcards |= OFPFW_IN_PORT;
+        mask->in_port = 0;
     } else {
-        flow->in_port = htons(atoi(argv[12])); 
+        flow->in_port = htonl(atoi(argv[12]));
     }
-    
-    mul_service_send_flow_del(cli->mul_service, dp_id, flow, wildcards,
-                          OFPP_NONE, C_FL_PRIO_DFL, C_FL_ENT_STATIC);
+
+    flow->table_id = atoi(argv[13]);
+    mul_service_send_flow_del(cli->mul_service, dp_id, flow, mask,
+                          0, C_FL_PRIO_DFL, C_FL_ENT_STATIC,
+                          OFPG_ANY);
 
     if (c_service_timed_throw_resp(cli->mul_service) > 0) {
         vty_out(vty, "Failed to delete a flow. Check log messages%s",
@@ -789,55 +823,68 @@ DEFUN (of_flow_vty_del,
     }
 
     free(flow);
+    free(mask);
 
     return CMD_SUCCESS;
 
 free_err_out:
     free(flow);
+    free(mask);
     return CMD_WARNING;
 }
 
-
 DEFUN_NOSH (of_flow_vty_add,
        of_flow_vty_add_cmd,
-       "of-flow add switch X dip A.B.C.D/M sip A.B.C.D/M proto (<0-255>|*) "
+       "of-flow add switch X smac (X|*) dmac (X|*) eth-type (<0-65535>|*) vid (<0-4095>|*)"
+       " vlan-pcp (<0-7>|*) dip A.B.C.D/M sip A.B.C.D/M proto (<0-255>|*) "
        "tos (<0-63>|*) dport (<0-65535>|*) sport (<0-65535>|*) "
-       "smac (X|*) dmac (X|*) eth-type (<0-65535>|*) vlan-id (<0-4095>|*)"
-       "vlan-pcp (<0-7>|*) in-port (<0-65535>|*)",
-       "Openflow flow tuple\n"  
+       "in-port (<0-65535>|*) table <0-254>",
+       "OF-Flow configuration\n"
        "Add\n"
        "openflow-switch\n"
        "datapath-id in 0xXXX format\n"
+       "Enter valid source mac\n"
+       "* for wildcard\n"
+       "destination mac\n"
+       "Enter valid destination mac\n"
+       "* for wildcard\n"
+       "ether type\n"
+       "Enter valid ether type\n"
+       "* for wildcard\n"
+       "vlan-id\n"
+       "Enter vlan-id\n"
+       "* for wildcard\n"
+       "vlan pcp\n"
+       "Enter vlan priority\n"
+       "* for wildcard\n"
        "dst-ip/mask\n"
        "Enter valid ip address and mask\n"
        "src-ip/mask\n"
        "Enter valid ip address and mask\n"
        "IP protocol\n"
-       "Enter a valid ip-proto OR * for wildcard\n"
+       "Enter a valid ip-proto"
+       "* for wildcard\n"
        "IP TOS\n"
-       "Enter ip-tos value OR * for wildcard\n"
+       "Enter ip-tos value\n"
+       "* for wildcard\n"
        "dst-port\n"
-       "Enter valid dst-port OR * for wildcard\n"
+       "Enter valid dst-port\n"
+       "* for wildcard\n"
        "src-port\n"
-       "Enter valid src port OR * for wildcard\n"
-       "source mac\n"
-       "Enter valid source mac OR * for wildcard\n"
-       "destination mac\n"
-       "Enter valid destination mac OR * for wildcard\n"
-       "ether type\n"
-       "Enter valid ether type OR * for wildcard\n"
-       "vlan-id\n"
-       "Enter vlan-id OR * for wildcard\n"
-       "vlan pcp\n"
-       "Enter vlan priority OR * for wildcard\n"
+       "Enter valid src port\n"
+       "* for wildcard\n"
        "input port\n"
-       "Enter input port index OR * for wildcard\n")
+       "Enter input port index\n"
+       "* for wildcard\n"
+       "table-id"
+       "Enter table-id\n")
 {
     int                          i;
     struct flow                  *flow;
+    struct flow                  *mask;
+    struct mul_act_mdata         *mdata;
     int                          ret;
     char                         *mac_str = NULL, *next = NULL;
-    uint32_t                     wildcards = 0;
     struct prefix_ipv4           dst_p, src_p;
     struct cli_flow_action_parms *args; 
     uint32_t                     nmask;
@@ -845,85 +892,23 @@ DEFUN_NOSH (of_flow_vty_add,
     flow = calloc(1, sizeof(*flow));
     assert(flow);
 
+    mask = calloc(1, sizeof(*mask));
+    assert(mask);
+    memset(mask, 0xff, sizeof(*flow));
+
+    mdata= calloc(1, sizeof(*mdata));
+    assert(mdata);
+
     args = calloc(1, sizeof(*args));
     assert(args);
 
-    args->actions = calloc(1, OF_MAX_ACTION_LEN); 
-    args->action_len = 0;
-
     args->dpid = strtoull(argv[0], NULL, 16);
 
-    ret = str2prefix(argv[1], (void *)&dst_p);
-    if (ret <= 0) {
-        vty_out (vty, "%% Malformed address%s", VTY_NEWLINE);
-        goto free_err_out;
-    }
-
-    if (dst_p.prefixlen) {
-        nmask   =  make_inet_mask(dst_p.prefixlen);
-        wildcards |= ((32 - dst_p.prefixlen) & ((1 << OFPFW_NW_DST_BITS)-1)) 
-                                << OFPFW_NW_DST_SHIFT;
-
+    if (!strncmp(argv[1], "*", strlen(argv[1]))) {
+        memset(flow->dl_src, 0, 6);
+        memset(mask->dl_src, 0, 6);
     } else {
-        wildcards |= OFPFW_NW_DST_ALL;
-        nmask = ~0;
-    }
-
-
-    flow->nw_dst = dst_p.prefix.s_addr & htonl(nmask); 
-
-    ret = str2prefix(argv[2], (void *)&src_p);
-    if (ret <= 0) {
-        vty_out (vty, "%% Malformed address%s", VTY_NEWLINE);
-        goto free_err_out;
-    }
-
-    if (src_p.prefixlen) {
-        nmask   =  (make_inet_mask(src_p.prefixlen));
-        wildcards |= ((32 - src_p.prefixlen) & ((1 << OFPFW_NW_SRC_BITS)-1))
-                                << OFPFW_NW_SRC_SHIFT;
-
-    } else {
-        wildcards |= OFPFW_NW_SRC_ALL;
-        nmask = ~0;
-    }
-
-    flow->nw_src = src_p.prefix.s_addr & htonl(nmask);
-
-    if (!strncmp(argv[3], "*", strlen(argv[3]))) {
-        flow->nw_proto = 0;
-        wildcards |= OFPFW_NW_PROTO;
-    } else {
-        flow->nw_proto = atoi(argv[3]);
-    }
-
-
-    if (!strncmp(argv[4], "*", strlen(argv[4]))) {
-        flow->nw_tos = 0;
-        wildcards |= OFPFW_NW_TOS;
-    } else {
-        flow->nw_tos = atoi(argv[4]);
-    }
-
-    if (!strncmp(argv[5], "*", strlen(argv[5]))) {
-        flow->tp_dst = 0;
-        wildcards |= OFPFW_TP_DST;
-    } else {
-        flow->tp_dst = htons(atoi(argv[5]));
-    }
-
-    if (!strncmp(argv[6], "*", strlen(argv[6]))) {
-        flow->tp_src = 0; 
-        wildcards |= OFPFW_TP_SRC;
-    } else {
-        flow->tp_src = htons(atoi(argv[6]));
-    }
-
-    if (!strncmp(argv[7], "*", strlen(argv[7]))) {
-        memset(&flow->dl_src, 0, 6);
-        wildcards |= OFPFW_DL_SRC;
-    } else {
-        mac_str = (void *)argv[7];
+        mac_str = (void *)argv[1];
         for (i = 0; i < 6; i++) {
             flow->dl_src[i] = (uint8_t)strtoul(mac_str, &next, 16);
             if(mac_str == next)
@@ -937,12 +922,11 @@ DEFUN_NOSH (of_flow_vty_add,
         }
     }
 
-
-    if (!strncmp(argv[8], "*", strlen(argv[8]))) {
-        memset(&flow->dl_dst, 0, 6);
-        wildcards |= OFPFW_DL_DST;
+    if (!strncmp(argv[2], "*", strlen(argv[2]))) {
+        memset(flow->dl_dst, 0, 6);
+        memset(mask->dl_dst, 0, 6);
     } else {
-        mac_str = (void *)argv[8];
+        mac_str = (void *)argv[2];
         for (i = 0; i < 6; i++) {
             flow->dl_dst[i] = (uint8_t)strtoul(mac_str, &next, 16);
             if(mac_str == next)
@@ -952,50 +936,146 @@ DEFUN_NOSH (of_flow_vty_add,
 
         if (i != 6) {
             vty_out (vty, "%% Malformed mac address%s", VTY_NEWLINE);
-            goto free_err_out;  
+            goto free_err_out;
+        }
+    }
+
+    if (!strncmp(argv[3], "*", strlen(argv[3]))) {
+        flow->dl_type = 0;
+        mask->dl_type = 0;
+    } else {
+        flow->dl_type = htons(atoi(argv[3]));
+    }
+
+    if (!strncmp(argv[4], "*", strlen(argv[4]))) {
+        flow->dl_vlan = 0;
+        mask->dl_vlan = 0;
+    } else {
+        flow->dl_vlan = htons(atoi(argv[4])); // Check ?
+    }
+
+    if (!strncmp(argv[5], "*", strlen(argv[5]))) {
+        flow->dl_vlan_pcp = 0;
+        mask->dl_vlan_pcp = 0;
+    } else {
+        flow->dl_vlan_pcp = htons(atoi(argv[5])); // Check ?
+    }
+
+    ret = str2prefix(argv[6], (void *)&dst_p);
+    if (ret <= 0) {
+        vty_out (vty, "%% Malformed address%s", VTY_NEWLINE);
+        goto free_err_out;
+    }
+
+    if (dst_p.prefixlen) {
+        if (flow->dl_type == htons(ETH_TYPE_IP)) {
+            nmask = make_inet_mask(dst_p.prefixlen);
+        } else {
+            vty_out (vty, "dl_type != ETH_TYPE_IP %s", VTY_NEWLINE);
+            goto free_err_out;
+        }
+    } else {
+        nmask = 0;
+    }
+
+    mask->nw_dst = htonl(nmask);
+    flow->nw_dst = dst_p.prefix.s_addr & htonl(nmask);
+
+    ret = str2prefix(argv[7], (void *)&src_p);
+    if (ret <= 0) {
+        vty_out (vty, "%% Malformed address%s", VTY_NEWLINE);
+        goto free_err_out;
+    }
+
+    if (src_p.prefixlen) {
+        if (flow->dl_type == htons(ETH_TYPE_IP)) {
+            nmask = make_inet_mask(src_p.prefixlen);
+        } else {
+            vty_out (vty, "dl_type != ETH_TYPE_IP %s", VTY_NEWLINE);
+            goto free_err_out;
+        }
+    } else {
+        nmask = 0;
+    }
+
+    mask->nw_src = htonl(nmask);
+    flow->nw_src = src_p.prefix.s_addr & htonl(nmask);
+
+    if (!strncmp(argv[8], "*", strlen(argv[8]))) {
+        flow->nw_proto = 0;
+        mask->nw_proto = 0;
+    } else {
+        if (flow->dl_type == htons(ETH_TYPE_IP)) {
+            flow->nw_proto = atoi(argv[8]);
+        } else {
+            vty_out (vty, "dl_type != ETH_TYPE_IP %s", VTY_NEWLINE);
+            goto free_err_out;
         }
     }
 
     if (!strncmp(argv[9], "*", strlen(argv[9]))) {
-        flow->dl_type = 0;
-        wildcards |= OFPFW_DL_TYPE;
+        flow->nw_tos = 0;
+        mask->nw_tos = 0;
     } else {
-        flow->dl_type = htons(atoi(argv[9]));
+        if (flow->dl_type == htons(ETH_TYPE_IP)) {
+            flow->nw_tos = atoi(argv[9]);
+        } else {
+            vty_out (vty, "dl_type != ETH_TYPE_IP %s", VTY_NEWLINE);
+            goto free_err_out;
+        }
     }
-
+    
     if (!strncmp(argv[10], "*", strlen(argv[10]))) {
-        flow->dl_vlan = 0;
-        wildcards |= OFPFW_DL_VLAN;
+        flow->tp_dst = 0;
+        mask->tp_dst = 0;
     } else {
-        flow->dl_vlan = htons(atoi(argv[10])); // Check ? 
+        if (flow->dl_type == htons(ETH_TYPE_IP) &&
+            (flow->nw_proto == IP_TYPE_UDP ||
+            flow->nw_proto == IP_TYPE_TCP)) {
+            flow->tp_dst = htons(atoi(argv[10]));
+        } else {
+            vty_out(vty, "dl_type != ETH_TYPE_IP || ip_type != UDP/TCP %s",
+                     VTY_NEWLINE);
+            goto free_err_out;
+        }
     }
 
     if (!strncmp(argv[11], "*", strlen(argv[11]))) {
-        flow->dl_vlan_pcp = 0;
-        wildcards |= OFPFW_DL_VLAN_PCP;
+        flow->tp_src = 0;
+        mask->tp_src = 0;
     } else {
-        flow->dl_vlan_pcp = htons(atoi(argv[11])); // Check ? 
+        if (flow->dl_type == htons(ETH_TYPE_IP) &&
+            (flow->nw_proto == IP_TYPE_UDP ||
+            flow->nw_proto == IP_TYPE_TCP)) {
+            flow->tp_src = htons(atoi(argv[11]));
+        } else {
+            vty_out(vty, "dl_type != ETH_TYPE_IP || ip_type != UDP/TCP %s",
+                    VTY_NEWLINE);
+            goto free_err_out;
+        }
     }
 
     if (!strncmp(argv[12], "*", strlen(argv[12]))) {
         flow->in_port = 0;
-        wildcards |= OFPFW_IN_PORT;
+        mask->in_port = 0;
     } else {
-        flow->in_port = htons(atoi(argv[12])); 
+        flow->in_port = htonl(atoi(argv[12]));
     }
-    
+
+    flow->table_id = atoi(argv[13]);
 #if 0
-    char *fl_str = of_dump_flow(flow);
+    char *fl_str = of_dump_flow_generic(flow, mask);
     printf ("%s\n", fl_str);
-    printf ("0x%x\n", wildcards);
     free(fl_str);
+    of1_0_flow_correction(flow, mask);
 #endif
 
-    wildcards = htonl(wildcards); /* Craziness */
-    of_flow_correction(flow, &wildcards);
-
+    mul_app_act_alloc(mdata);
+    mul_app_act_set_ctors(mdata, args->dpid); 
     args->fl = flow;
-    args->wildcards = ntohl(wildcards);
+    args->mask = mask;
+    args->mdata = mdata;
+    args->cmn.flow_act = true;
 
     vty->index = args;
 
@@ -1008,6 +1088,9 @@ DEFUN_NOSH (of_flow_vty_add,
 free_err_out:
     free(args);
     free(flow);
+    mul_app_act_free(mdata);
+    free(mdata);
+    free(mask);
     return CMD_WARNING;
 }
 
@@ -1018,14 +1101,10 @@ DEFUN (of_add_output_action,
        "Output action\n"
        "Enter port-id\n")
 {
-    struct cli_flow_action_parms *args = vty->index;
-    uint8_t                      *act_wr_ptr;
+    mul_act_mdata_t *mdata = NULL;
+    CLI_ARGS_TO_ACT_MDATA_SW(mdata, vty->index);
 
-    act_wr_ptr = (uint8_t *)args->actions + args->action_len;
-    args->action_len += of_make_action_output((char **)&act_wr_ptr,
-                                              OF_MAX_ACTION_LEN - args->action_len,
-                                              atoi(argv[0]));
-
+    mul_app_action_output(mdata, atoi(argv[0]));
     return CMD_SUCCESS;
 }
 
@@ -1036,14 +1115,10 @@ DEFUN (of_add_set_vid_action,
        "set vlanid action\n"
        "Enter vlan-id\n")
 {
-    struct cli_flow_action_parms *args = vty->index;
-    uint8_t                      *act_wr_ptr;
+    mul_act_mdata_t *mdata = NULL;
+    CLI_ARGS_TO_ACT_MDATA_SW(mdata, vty->index);
 
-    act_wr_ptr = (uint8_t *)args->actions + args->action_len;
-    args->action_len += of_make_action_set_vid((char **)&act_wr_ptr,
-                                               OF_MAX_ACTION_LEN - args->action_len,
-                                               strtoull(argv[0], NULL, 10));
-
+    mul_app_action_set_vid(mdata, strtoull(argv[0], NULL, 10));
     return CMD_SUCCESS;
 }
 
@@ -1053,13 +1128,10 @@ DEFUN (of_add_strip_vlan_action,
        "Add openflow action\n"
        "Strip vlan action\n")
 {
-    struct cli_flow_action_parms *args = vty->index;
-    uint8_t                      *act_wr_ptr;
+    mul_act_mdata_t *mdata = NULL;
+    CLI_ARGS_TO_ACT_MDATA_SW(mdata, vty->index);    
 
-    act_wr_ptr = (uint8_t *)args->actions + args->action_len;
-    args->action_len += of_make_action_strip_vlan((char **)&act_wr_ptr,
-                                               OF_MAX_ACTION_LEN - args->action_len);
-
+    mul_app_action_strip_vlan(mdata);
     return CMD_SUCCESS;
 }
 
@@ -1070,14 +1142,10 @@ DEFUN (of_add_set_vpcp_action,
        "set vlan-pcp action\n"
        "Enter vlan-pcp\n")
 {
-    struct cli_flow_action_parms *args = vty->index;
-    uint8_t                      *act_wr_ptr;
+    mul_act_mdata_t *mdata = NULL;
+    CLI_ARGS_TO_ACT_MDATA_SW(mdata, vty->index);
 
-    act_wr_ptr = (uint8_t *)args->actions + args->action_len;
-    args->action_len += of_make_action_set_vlan_pcp((char **)&act_wr_ptr,
-                                               OF_MAX_ACTION_LEN - args->action_len,
-                                               strtoull(argv[0], NULL, 10));
-
+    mul_app_action_set_vlan_pcp(mdata, strtoull(argv[0], NULL, 10));
     return CMD_SUCCESS;
 }
 
@@ -1088,11 +1156,11 @@ DEFUN (of_add_set_dmac_action,
        "set dmac action\n"
        "Enter MAC address (xx:xx:xx:xx:xx:xx) \n")
 {
-    struct cli_flow_action_parms *args = vty->index;
-    uint8_t                      *act_wr_ptr;
+    mul_act_mdata_t *mdata = NULL;
     uint8_t                      dmac[6];
     char                         *mac_str, *next = NULL;
     int                          i = 0;
+    CLI_ARGS_TO_ACT_MDATA_SW(mdata, vty->index);
 
 
     mac_str = (void *)argv[0];
@@ -1108,12 +1176,7 @@ DEFUN (of_add_set_dmac_action,
         return CMD_WARNING;
     }
 
-
-    act_wr_ptr = (uint8_t *)args->actions + args->action_len;
-    args->action_len += of_make_action_set_dmac((char **)&act_wr_ptr,
-                                                OF_MAX_ACTION_LEN - args->action_len,
-                                                dmac);
-
+    mul_app_action_set_dmac(mdata, dmac);
     return CMD_SUCCESS;
 }
 
@@ -1124,11 +1187,11 @@ DEFUN (of_add_set_smac_action,
        "set smac action\n"
        "Enter MAC address (xx:xx:xx:xx:xx:xx) \n")
 {
-    struct cli_flow_action_parms *args = vty->index;
-    uint8_t                      *act_wr_ptr;
+    mul_act_mdata_t *mdata = NULL;
     uint8_t                      smac[6];
     char                         *mac_str, *next = NULL;
     int                          i = 0;
+    CLI_ARGS_TO_ACT_MDATA_SW(mdata, vty->index);
 
 
     mac_str = (void *)argv[0];
@@ -1144,12 +1207,7 @@ DEFUN (of_add_set_smac_action,
         return CMD_WARNING;
     }
 
-
-    act_wr_ptr = (uint8_t *)args->actions + args->action_len;
-    args->action_len += of_make_action_set_smac((char **)&act_wr_ptr,
-                                                OF_MAX_ACTION_LEN - args->action_len,
-                                                smac);
-
+    mul_app_action_set_smac(mdata, smac);
     return CMD_SUCCESS;
 }
 
@@ -1160,19 +1218,16 @@ DEFUN (of_add_set_nw_saddr_action,
        "set source ip address action\n"
        "Enter ip address\n")
 {
-    struct cli_flow_action_parms *args = vty->index;
-    uint8_t                      *act_wr_ptr;
+    mul_act_mdata_t *mdata = NULL;
     struct in_addr               ip_addr;
+    CLI_ARGS_TO_ACT_MDATA_SW(mdata, vty->index);
 
     if (inet_aton(argv[0], &ip_addr) <= 0) {
         vty_out(vty, "Malformed ip address%s", VTY_NEWLINE);
         return CMD_WARNING;
     }
-    act_wr_ptr = (uint8_t *)args->actions + args->action_len;
-    args->action_len += of_make_action_set_nw_saddr((char **)&act_wr_ptr,
-                                               OF_MAX_ACTION_LEN - args->action_len,
-                                               ntohl(ip_addr.s_addr));
 
+    mul_app_action_set_nw_saddr(mdata, ntohl(ip_addr.s_addr));
     return CMD_SUCCESS;
 }
 
@@ -1183,19 +1238,16 @@ DEFUN (of_add_set_nw_daddr_action,
        "set destination ip address action\n"
        "Enter ip address\n")
 {
-    struct cli_flow_action_parms *args = vty->index;
-    uint8_t                      *act_wr_ptr;
+    mul_act_mdata_t *mdata = NULL;
     struct in_addr               ip_addr;
+    CLI_ARGS_TO_ACT_MDATA_SW(mdata, vty->index);
 
     if (inet_aton(argv[0], &ip_addr) <= 0) {
         vty_out(vty, "Malformed ip address%s", VTY_NEWLINE);
         return CMD_WARNING;
     }
-    act_wr_ptr = (uint8_t *)args->actions + args->action_len;
-    args->action_len += of_make_action_set_nw_daddr((char **)&act_wr_ptr,
-                                               OF_MAX_ACTION_LEN - args->action_len,
-                                               ntohl(ip_addr.s_addr));
 
+    mul_app_action_set_nw_daddr(mdata, ntohl(ip_addr.s_addr));
     return CMD_SUCCESS;
 }
 
@@ -1205,10 +1257,14 @@ DEFUN (of_add_drop_action,
        "Add openflow action\n"
        "drop packet action\n")
 {
-    struct cli_flow_action_parms *args = vty->index;
-
-
-    args->drop_pkt = true;
+    struct cli_common_args *__cmn = vty->index;
+    if (__cmn->flow_act) {
+        struct cli_flow_action_parms *fl_parms = vty->index;
+        fl_parms->drop_pkt = true;
+    } else {
+        struct cli_group_mod_parms *g_parms = vty->index;
+        g_parms->drop_pkt[g_parms->act_vec_len] = true;
+    }
 
     return CMD_SUCCESS;
 }
@@ -1221,29 +1277,28 @@ DEFUN (flow_actions_commit,
     struct cli_flow_action_parms *args = vty->index;
     void *actions = NULL;
     uint8_t prio;
-    size_t action_len = 0;
+    size_t action_len = args->mdata ? mul_app_act_len(args->mdata) : 0;
 
     if (args) {
-        if (args->action_len >= 4 || args->drop_pkt) {
+        if (action_len >= 4 || args->drop_pkt) {
             /* TODO action validation here */
 
             if (!args->drop_pkt) {
-                actions = args->actions;
-                action_len = args->action_len;
+                actions = args->mdata->act_base;
+                action_len = mul_app_act_len(args->mdata);
                 prio = C_FL_PRIO_DFL;
             } else {
-                /* FIXME - It should be C_FL_PRIO_DRP but as of 
-                 * now flow-del does not take prio into account 
-                 */
+                action_len = 0;
                 prio = C_FL_PRIO_DFL;
                 vty_out(vty, "Ignoring all non-drop actions if any%s",
                         VTY_NEWLINE);
             }
             mul_service_send_flow_add(cli->mul_service, args->dpid,
-                                  args->fl, CLI_UNK_BUFFER_ID,
+                                  args->fl, args->mask, 
+                                  CLI_UNK_BUFFER_ID,
                                   actions, action_len,
-                                  0, 0, args->wildcards,
-                                  prio, C_FL_ENT_STATIC);
+                                  0, 0, prio, 
+                                  C_FL_ENT_STATIC);
             if (c_service_timed_throw_resp(cli->mul_service) > 0) {
                 vty_out(vty, "Failed to add a flow. Check log messages%s", 
                         VTY_NEWLINE);
@@ -1255,8 +1310,12 @@ DEFUN (flow_actions_commit,
         if (args->fl) {
             free(args->fl);
         }
-        if (args->actions) {
-            free(args->actions);
+        if (args->mask) {
+            free(args->mask);
+        }
+        if (args->mdata) {
+            mul_app_act_free(args->mdata);
+            free(args->mdata);
         }
         free(args);
         vty->index = NULL;
@@ -1265,8 +1324,6 @@ DEFUN (flow_actions_commit,
     vty->node = MUL_NODE;
     return CMD_SUCCESS;
 }
-
-
 
 DEFUN (flow_actions_exit,
        flow_actions_exit_cmd,
@@ -1277,7 +1334,10 @@ DEFUN (flow_actions_exit,
 
     if (args) {
         if (args->fl) free(args->fl);
-        if (args->actions) free(args->actions);
+        if (args->mdata) {
+            mul_app_act_free(args->mdata);
+            free(args->mdata);
+        }
         free(args);
     }
 
@@ -1285,6 +1345,231 @@ DEFUN (flow_actions_exit,
     return CMD_SUCCESS;
 }
 
+struct cmd_node group_node =
+{
+    GROUP_NODE,
+    "(config-grp-act-vectors)# ",
+    1,
+    NULL,
+    NULL
+};
+
+
+DEFUN (group_act_vec_exit,
+       group_act_vec_exit_cmd,
+       "exit",
+       "Exit from group vector actions configuration mode")
+{
+    struct cli_group_mod_parms *args = vty->index;
+    int act;
+
+    if (args) {
+        for (act = 0; act < args->act_vec_len; act++) {
+            of_mact_free(&args->mdata[act]);
+        }
+        free(args);
+    }
+
+    vty->node = CONFIG_NODE;
+    return CMD_SUCCESS;
+}
+
+DEFUN (group_actions_vectors,
+       group_actions_vectors_cmd,
+       "group ARGS",
+       "group\n"
+       "group entries\n")
+{
+    vty->node = GROUP_NODE;
+
+    return CMD_SUCCESS;
+}
+
+DEFUN (group_act_vector_done,
+       group_act_vector_done_cmd,
+       "group-act-vector-finish",
+       "Save the current vector and add a new action vector\n")
+{
+    struct cli_group_mod_parms *args = vty->index;
+
+    if (args->act_vec_len + 1 >= OF_MAX_ACT_VECTORS) {
+        vty_out(vty, "Cant add more group action vectors\r\n");
+        group_act_vec_exit_cmd.func(self, vty, argc, argv);
+        return CMD_SUCCESS;
+    }
+
+    if (!args->drop_pkt[args->act_vec_len-1] &&
+        !of_mact_len(&args->mdata[args->act_vec_len-1])) {
+        vty_out(vty, "No actions added. Try adding again..\r\n");
+        return CMD_SUCCESS;
+    }
+
+    assert(args->act_vec_len);
+
+    args->act_vec_len++;
+    of_mact_alloc(&args->mdata[args->act_vec_len-1]);
+    args->mdata[args->act_vec_len-1].only_acts = true;
+    mul_app_act_set_ctors(&args->mdata[args->act_vec_len-1], args->dpid);
+
+    return CMD_SUCCESS;
+}
+
+DEFUN (group_commit,
+       group_commit_cmd,
+       "commit-group",
+       "commit the group and its actions-vectors")
+{
+    struct cli_group_mod_parms *args = vty->index;
+    struct of_group_mod_params g_parms;
+    struct of_act_vec_elem *act_elem;
+    int act = 0;
+
+    memset(&g_parms, 0, sizeof(g_parms));
+
+    if (args) {
+
+        if (!args->drop_pkt[args->act_vec_len-1] &&
+            !of_mact_len(&args->mdata[args->act_vec_len-1])) {
+            vty_out(vty, "No actions added. Try adding again..\r\n");
+            return CMD_SUCCESS;
+        }
+
+        g_parms.group = args->group;
+        g_parms.type = args->type;
+        for (act = 0; act < args->act_vec_len; act++) {
+            bool drop = args->drop_pkt[act];
+            if (drop) {
+                of_mact_free(&args->mdata[act]);
+            } else {
+                act_elem = calloc(1, sizeof(*act_elem));
+                act_elem->actions = args->mdata[act].act_base;
+                act_elem->action_len = of_mact_len(&args->mdata[act]);
+                g_parms.act_vectors[act] = act_elem;
+            }
+        }
+        g_parms.act_vec_len = args->act_vec_len;
+        mul_service_send_group_add(cli->mul_service, args->dpid, &g_parms);
+        if (c_service_timed_throw_resp(cli->mul_service) > 0) {
+            vty_out(vty, "Failed to add group. Check log messages%s",
+                    VTY_NEWLINE);
+        }
+        for (act = 0; act < args->act_vec_len; act++) {
+            of_mact_free(&args->mdata[act]);
+            free(g_parms.act_vectors[act]);
+        }
+        free(args);
+        vty->index = NULL;
+    }
+
+    vty->node = CONFIG_NODE;
+    return CMD_SUCCESS;
+}
+
+DEFUN_NOSH (of_group_vty_add,
+       of_group_vty_add_cmd,
+       "of-group add switch X group <0-65535> type (all|select|indirect|ff)",
+       "OF-group configuration\n"
+       "Add\n"
+       "openflow-switch\n"
+       "datapath-id in 0xXXX format\n"
+       "openflow-group\n"
+       "Enter valid group-id\n"
+       "group-type\n"
+       "Executes all action buckets \n"
+       "Selects one of the buckets \n"
+       "Tndirect single bucket\n"
+       "Fast failover bucket\n")
+{
+    uint64_t dpid;
+    struct cli_group_mod_parms *cli_parms;
+    uint32_t group;
+    uint8_t type, version;
+    int ret = CMD_WARNING;
+
+    dpid = strtoull(argv[0], NULL, 16);
+    if (!dpid) {
+        vty_out(vty, "No such switch\r\n");
+        return CMD_WARNING;
+    }
+
+    version = c_app_switch_get_version_with_id(dpid);
+    if (version !=  OFP_VERSION_131) {
+        vty_out(vty, "Switch 0x%llx does not support groups", U642ULL(dpid));
+        return CMD_WARNING;
+    }
+
+    group = atol(argv[1]);
+
+    if (!strncmp(argv[2], "all", strlen(argv[2]))) {
+        type = OFPGT_ALL;
+    } else if (!strncmp(argv[2], "select", strlen(argv[2]))) {
+        type = OFPGT_SELECT;
+    } else if (!strncmp(argv[2], "indirect", strlen(argv[2]))) {
+        type = OFPGT_INDIRECT;
+    } else if (!strncmp(argv[2], "ff", strlen(argv[2]))) {
+        type = OFPGT_FF;
+    } else {
+        vty_out(vty, "Unrecognized group-type (%s)\r\n", argv[2]);
+        return CMD_WARNING;
+    }
+
+    cli_parms = calloc(1, sizeof(*cli_parms));
+    if (!cli_parms) {
+        return CMD_WARNING;
+    }
+
+    cli_parms->dpid = dpid;
+    cli_parms->group = group;
+    cli_parms->type = type;
+    of_mact_alloc(&cli_parms->mdata[0]);
+    cli_parms->mdata[0].only_acts = true;
+    mul_app_act_set_ctors(&cli_parms->mdata[0], dpid);
+    cli_parms->act_vec_len = 1;
+
+    vty->index = cli_parms;
+
+    if ((ret = group_actions_vectors_cmd.func(self, vty, argc, argv)) != CMD_SUCCESS) {
+        goto free_err_out;
+    }
+
+    return CMD_SUCCESS;
+
+free_err_out:
+    /* FIXME - Free action vectors */
+    free(cli_parms);
+    return CMD_WARNING;
+}
+
+
+DEFUN (of_group_vty_del,
+       of_group_vty_del_cmd,
+       "of-group del switch X group <0-65535>",
+       "OF-group configuration\n"
+       "Delete\n"
+       "openflow-switch\n"
+       "datapath-id in 0xXXX format\n"
+       "openflow-group\n"
+       "Enter valid group-id\n")
+{
+    struct of_group_mod_params gp_parms;
+    uint64_t dpid;
+    uint32_t group;
+
+    memset(&gp_parms, 0, sizeof(gp_parms));
+
+    dpid = strtoull(argv[0], NULL, 16);
+
+    group = atol(argv[1]);
+    gp_parms.group = group;
+
+    mul_service_send_group_del(cli->mul_service, dpid, &gp_parms);
+    if (c_service_timed_throw_resp(cli->mul_service) > 0) {
+        vty_out(vty, "Failed to del the group. Check log messages%s",
+                VTY_NEWLINE);
+    }
+
+    return CMD_SUCCESS;
+}
 
 DEFUN (show_neigh_switch_detail,
        show_neigh_switch_detail_cmd,
@@ -1635,11 +1920,13 @@ cli_module_vty_init(void *arg UNUSED)
     install_node(&tr_conf_node, NULL);
     install_node(&fab_conf_node, NULL);
     install_node(&flow_actions_node, NULL);
+    install_node(&group_node, NULL);
 
     install_default(MUL_NODE);
     install_default(MULTR_NODE);
     install_default(MULFAB_NODE);
     install_default(FLOW_NODE);
+    install_default(GROUP_NODE);
     install_element_attr_type(CONFIG_NODE, &mul_conf_cmd, MUL_NODE);
     install_element(MUL_NODE, &mul_conf_exit_cmd);
     install_element(ENABLE_NODE, &show_of_switch_cmd);
@@ -1650,7 +1937,6 @@ cli_module_vty_init(void *arg UNUSED)
     install_element(ENABLE_NODE, &show_of_flow_all_static_cmd);
     install_element(MUL_NODE, &of_flow_vty_add_cmd);
     install_element(MUL_NODE, &of_flow_vty_del_cmd);
-    install_element(MUL_NODE, &mul_conf_exit_cmd);
     install_element_attr_type(FLOW_NODE, &of_add_output_action_cmd, MUL_NODE);
     install_element_attr_type(FLOW_NODE, &of_add_set_vid_action_cmd, MUL_NODE);
     install_element_attr_type(FLOW_NODE, &of_add_set_dmac_action_cmd, MUL_NODE);
@@ -1662,6 +1948,19 @@ cli_module_vty_init(void *arg UNUSED)
     install_element_attr_type(FLOW_NODE, &of_add_strip_vlan_action_cmd, MUL_NODE);
     install_element_attr_type(FLOW_NODE, &of_add_set_vpcp_action_cmd, MUL_NODE);
     install_element_attr_type(FLOW_NODE, &of_add_drop_action_cmd, MUL_NODE); 
+    install_element(MUL_NODE, &of_group_vty_add_cmd);
+    install_element(MUL_NODE, &of_group_vty_del_cmd);
+    install_element_attr_type(GROUP_NODE, &of_add_output_action_cmd, MUL_NODE);
+    install_element_attr_type(GROUP_NODE, &of_add_set_vid_action_cmd, MUL_NODE);
+    install_element_attr_type(GROUP_NODE, &of_add_set_dmac_action_cmd, MUL_NODE);
+    install_element_attr_type(GROUP_NODE, &of_add_set_nw_saddr_action_cmd, MUL_NODE);
+    install_element_attr_type(GROUP_NODE, &of_add_set_nw_daddr_action_cmd, MUL_NODE);
+    install_element_attr_type(GROUP_NODE, &of_add_set_smac_action_cmd, MUL_NODE);
+    install_element_attr_type(GROUP_NODE, &of_add_strip_vlan_action_cmd, MUL_NODE);
+    install_element_attr_type(GROUP_NODE, &of_add_set_vpcp_action_cmd, MUL_NODE);
+    install_element_attr_type(GROUP_NODE, &group_act_vector_done_cmd, MUL_NODE);
+    install_element_attr_type(GROUP_NODE, &group_commit_cmd, MUL_NODE);
+    install_element_attr_type(GROUP_NODE, &group_act_vec_exit_cmd, MUL_NODE);
 
     install_element_attr_type(CONFIG_NODE, &mul_tr_conf_cmd, MULTR_NODE);
     install_element(MULTR_NODE, &mul_tr_conf_exit_cmd);

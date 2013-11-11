@@ -184,8 +184,7 @@ fab_per_switch_route_install(void *rt, void *u_arg)
 {
     rt_path_elem_t              *rt_elem = rt;
     fab_route_t                 *froute = u_arg;
-    uint8_t                     *actions, *pactions;
-    size_t                      action_len = sizeof(struct ofp_action_output);
+    struct mul_act_mdata        mdata;
     uint16_t                    out_port, in_port;
     uint16_t                    tenant_id;
     bool                        fhop, lhop; 
@@ -210,6 +209,9 @@ fab_per_switch_route_install(void *rt, void *u_arg)
     out_port = lhop ? froute->dst->sw.port : rt_elem->link.la;
     in_port = fhop ? froute->src->sw.port : rt_elem->in_port;
 
+    mul_app_act_alloc(&mdata);
+    mul_app_act_set_ctors(&mdata, sw->dpid);
+
     /* 
      * Update the last hop oport and first hop iport in the route
      * This is not accomplshed by route-service 
@@ -221,92 +223,72 @@ fab_per_switch_route_install(void *rt, void *u_arg)
         if (lhop && fhop) { 
             goto apply_route;
         } else if (fhop) {
-            action_len += sizeof(struct ofp_action_vlan_vid);
             add_pkt_tenant = true;
             goto apply_route;
         } else if (!lhop) {
-            action_len += sizeof(struct ofp_action_vlan_vid);
             add_pkt_tenant = true;
         } else {
             /* Last hop */
-            action_len += sizeof(struct ofp_action_header); 
-#ifdef CONFIG_HAVE_PROXY_ARP
-            action_len += sizeof(struct ofp_action_dl_addr);
-#endif
             strip_pkt_tenant = true;
         } 
 
-        fab_add_tenant_id(&froute->rt_flow, &froute->rt_wildcards, tenant_id);
+        fab_add_tenant_id(&froute->rt_flow, &froute->rt_mask, tenant_id);
     } else {
 #ifdef CONFIG_HAVE_PROXY_ARP
         if (lhop) {
-            action_len += sizeof(struct ofp_action_dl_addr);    
             set_dmac_lhop = true;
         }
 #endif
     }
 
 apply_route:
-    actions = fab_zalloc(action_len);
-    pactions = actions;
 
     if (add_pkt_tenant) {
-        of_make_action_set_vid((char **)&pactions,
-                          sizeof(struct ofp_action_vlan_vid),
-                          tenant_id);
-        pactions += sizeof(struct ofp_action_vlan_vid); 
+        mul_app_action_set_vid(&mdata, tenant_id);
     } else if (strip_pkt_tenant) {
-        of_make_action_strip_vlan((char **)&pactions,
-                          sizeof(struct ofp_action_header));
-        pactions += sizeof(struct ofp_action_header);
+        mul_app_action_strip_vlan(&mdata);
 #ifdef CONFIG_HAVE_PROXY_ARP
-        of_make_action_set_dmac((char **)&pactions,
-                          sizeof(struct ofp_action_dl_addr),
-                          froute->dst->hkey.host_mac);
-        pactions += sizeof(struct ofp_action_dl_addr);
+        mul_app_action_set_dmac(&mdata, froute->dst->hkey.host_mac);
 #endif
     } else if (set_dmac_lhop) {
 #ifdef CONFIG_HAVE_PROXY_ARP
-        of_make_action_set_dmac((char **)&pactions,
-                          sizeof(struct ofp_action_dl_addr),
-                          froute->dst->hkey.host_mac);
-        pactions += sizeof(struct ofp_action_dl_addr);
+        mul_app_action_set_dmac(&mdata, froute->dst->hkey.host_mac);
 #endif
     }
 
-    of_make_action_output((char **)&pactions,
-                          sizeof(struct ofp_action_output),
-                          in_port == out_port ? OFPP_IN_PORT : out_port);
+    mul_app_action_output(&mdata, in_port == out_port ? OFPP_IN_PORT : out_port);
 
-    froute->rt_flow.in_port = htons(in_port);
-    froute->rt_wildcards &= ~(OFPFW_IN_PORT);
+    froute->rt_flow.in_port = htonl((uint32_t)in_port);
+    of_mask_set_in_port(&froute->rt_mask);
 
-    fl_str = of_dump_flow(&froute->rt_flow, htonl(froute->rt_wildcards));
+    fl_str = of_dump_flow_generic(&froute->rt_flow, &froute->rt_mask);
     c_log_debug("%s", fl_str);
     free(fl_str);
 
     mul_app_send_flow_add(FAB_APP_NAME, NULL, (uint64_t)(rt_elem->sw_alias), 
-                          &froute->rt_flow, FAB_UNK_BUFFER_ID,
-                          actions, action_len, 
-                          0, 0, froute->rt_wildcards,
-                          froute->prio, C_FL_ENT_SWALIAS | C_FL_ENT_GSTATS);
+                          &froute->rt_flow, 
+                          &froute->rt_mask, 
+                          FAB_UNK_BUFFER_ID,
+                          mdata.act_base, mul_app_act_len(&mdata), 
+                          0, 0, froute->prio,
+                          C_FL_ENT_SWALIAS | C_FL_ENT_GSTATS);
 #ifndef CONFIG_HAVE_PROXY_ARP
     froute->rt_flow.dl_type = ntohs(ETH_TYPE_ARP);
     mul_app_send_flow_add(FAB_APP_NAME, NULL, (uint64_t)(rt_elem->sw_alias), 
-                          &froute->rt_flow, FAB_UNK_BUFFER_ID,
-                          actions, action_len, 
-                          0, 0, froute->rt_wildcards,
+                          &froute->rt_flow, &froute->rt_mask, FAB_UNK_BUFFER_ID,
+                          actions, action_len, 0, 0,
                           froute->prio, C_FL_ENT_SWALIAS | C_FL_ENT_GSTATS);
 #endif
 
     /* Reset flow modifications if any */
     froute->rt_flow.dl_type = htons(ETH_TYPE_IP);
     if (tenant_id) {
-        fab_reset_tenant_id(&froute->rt_flow, &froute->rt_wildcards);
+        fab_reset_tenant_id(&froute->rt_flow, &froute->rt_mask);
     }
 
     froute->rt_flow.in_port = 0;
-    froute->rt_wildcards |= OFPFW_IN_PORT;
+    of_mask_clr_in_port(&froute->rt_mask);
+    mul_app_act_free(&mdata);
 }
 
 /**
@@ -337,34 +319,34 @@ fab_per_switch_route_uninstall(void *rt, void *u_arg)
 
     fhop = rt_elem->flags & RT_PELEM_FIRST_HOP ? true: false;
     if (tenant_id && !fhop) {
-         fab_add_tenant_id(&froute->rt_flow, &froute->rt_wildcards, tenant_id);
+         fab_add_tenant_id(&froute->rt_flow, &froute->rt_mask, tenant_id);
     }
 
-    froute->rt_flow.in_port = htons(rt_elem->in_port);
-    froute->rt_wildcards &= ~(OFPFW_IN_PORT);
+    froute->rt_flow.in_port = htonl(rt_elem->in_port);
+    of_mask_set_in_port(&froute->rt_mask);
 
-    fl_str = of_dump_flow(&froute->rt_flow, htonl(froute->rt_wildcards));
+    fl_str = of_dump_flow_generic(&froute->rt_flow, &froute->rt_mask);
     c_log_debug("%s", fl_str);
     free(fl_str);
 
     mul_app_send_flow_del(FAB_APP_NAME, NULL, (uint64_t)(rt_elem->sw_alias),
-                          &froute->rt_flow, froute->rt_wildcards, OFPP_NONE, 
-                          froute->prio, C_FL_ENT_SWALIAS);
+                          &froute->rt_flow, &froute->rt_mask, OFPP_NONE, 
+                          froute->prio, C_FL_ENT_SWALIAS, OFPG_ANY);
 
 #ifndef CONFIG_HAVE_PROXY_ARP
     froute->rt_flow.dl_type = ntohs(ETH_TYPE_ARP);
     mul_app_send_flow_del(FAB_APP_NAME, NULL, (uint64_t)(rt_elem->sw_alias),
-                          &froute->rt_flow, froute->rt_wildcards, OFPP_NONE, 
-                          froute->prio, C_FL_ENT_SWALIAS);
+                          &froute->rt_flow, &froute->rt_mask, OFP_NO_PORT, 
+                          froute->prio, C_FL_ENT_SWALIAS, OFPG_ANY);
 #endif
 
     froute->rt_flow.dl_type = ntohs(ETH_TYPE_IP);
     if (tenant_id && !fhop) {
-        fab_reset_tenant_id(&froute->rt_flow, &froute->rt_wildcards);
+        fab_reset_tenant_id(&froute->rt_flow, &froute->rt_mask);
     }
 
     froute->rt_flow.in_port = 0;
-    froute->rt_wildcards |= OFPFW_IN_PORT;
+    of_mask_clr_in_port(&froute->rt_mask);
 }
 
 /**
@@ -592,10 +574,10 @@ fab_mkroute(fab_host_t *src, fab_host_t *dst)
          froute->flags |= FAB_ROUTE_SAME_SWITCH;
     }
 
-    froute->rt_wildcards = OFPFW_ALL;   
+    of_mask_set_dc_all(&froute->rt_mask);
 
 #if 0
-    fab_add_tenant_id(&froute->rt_flow, &froute->rt_wildcards, 
+    fab_add_tenant_id(&froute->rt_flow, &froute->rt_mask, 
                       fab_tnid_to_tid(src->hkey.tn_id));
 #endif
 
@@ -607,16 +589,16 @@ fab_mkroute(fab_host_t *src, fab_host_t *dst)
 
     if (!src->dfl_gw) {
         froute->rt_flow.nw_src = htonl(src->hkey.host_ip);
-        froute->rt_wildcards &= ~(OFPFW_NW_SRC_MASK);
+        of_mask_set_nw_src(&froute->rt_mask, 32);
     }
 
     if (!dst->dfl_gw) {
         froute->rt_flow.nw_dst = htonl(dst->hkey.host_ip);
-        froute->rt_wildcards &= ~(OFPFW_NW_DST_MASK);
+        of_mask_set_nw_dst(&froute->rt_mask, 32);
     }
 
     froute->rt_flow.dl_type = htons(ETH_TYPE_IP);
-    froute->rt_wildcards &= ~(OFPFW_DL_TYPE);
+    of_mask_set_dl_type(&froute->rt_mask);
 
     froute->iroute = fab_route_get(fab_ctx->route_service,
                                    src->sw.alias, dst->sw.alias,

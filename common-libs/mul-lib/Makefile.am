@@ -4,7 +4,7 @@ DEFS = @DEFS@ -DSYSCONFDIR=\"$(sysconfdir)/\"
 lib_LTLIBRARIES = libmulutil.la
 
 libmulutil_la_SOURCES = \
-    ./src/cbuf.c ./src/c_util.c  ./src/idx_pool.c
+    ./src/cbuf.c ./src/c_util.c  ./src/idx_pool.c ./src/clog.c ./src/rlim.c
 
 pkginclude_HEADERS = \
-    ./include/atomic.h  ./include/cbuf.h  ./include/compiler.h  ./include/c_util.h  ./include/idx_pool.h  ./include/lock.h
+    ./include/atomic.h  ./include/cbuf.h  ./include/compiler.h  ./include/c_util.h  ./include/idx_pool.h  ./include/lock.h ./include/clog.h ./include/rlim.h

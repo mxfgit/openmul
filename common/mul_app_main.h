@@ -24,6 +24,13 @@
 #define C_APP_VTY_COMMON_PATH "/var/run/app_"
 #define C_APP_PID_COMMON_PATH "/var/run/mul_app"
 
+struct c_app_service {
+   char app_name[MAX_SERV_NAME_LEN];
+   char service_name[MAX_SERV_NAME_LEN];
+   uint16_t  port;
+   void * (*service_priv_init)(void);
+};
+
 struct c_app_hdl_
 {
     char *progname;
@@ -32,11 +39,18 @@ struct c_app_hdl_
     struct event *reconn_timer_event;
     void (*ev_cb)(void *app, void *buf);
 
+    c_rw_lock_t infra_lock;
+    GHashTable *switches;
+
     /* For VTY thread */
     pthread_t vty_thread;
     void  *vty_master;
     uint16_t vty_port;
 };
 typedef struct c_app_hdl_ c_app_hdl_t;
+
+
+void c_app_reconnect(c_app_hdl_t *hdl);
+void c_service_conn_update(void *service, unsigned char conn_event);
 
 #endif

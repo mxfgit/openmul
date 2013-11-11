@@ -84,8 +84,9 @@ struct fab_route
 #define FAB_ROUTE_RETRY_INIT_TS (1)
 #define FAB_ROUTE_RETRY_TS (4)
     time_t expiry_ts;
-    uint32_t rt_wildcards;
+    // uint32_t rt_wildcards;
     struct flow rt_flow;
+    struct flow rt_mask;
     GSList *iroute;
 };
 typedef struct fab_route fab_route_t;
@@ -199,9 +200,10 @@ void __fab_del_pending_routes_tofro_host(fab_struct_t *fab_ctx, fab_host_t *host
 
 void fab_add_arp_tap_per_switch(void *opq, uint64_t dpid);
 void fab_add_dhcp_tap_per_switch(void *opq, uint64_t dpid);
-void fab_arp_rcv(void *opq, fab_struct_t *fab_ctx , c_ofp_packet_in_t *pin);
-void fab_dhcp_rcv(void *opq, fab_struct_t *fab_ctx , c_ofp_packet_in_t *pin);
-
+void fab_arp_rcv(void *opq, fab_struct_t *fab_ctx UNUSED, 
+            struct flow *fl, uint32_t in_port, uint8_t *raw, uint64_t dpid);
+void fab_dhcp_rcv(void *opq UNUSED, fab_struct_t *fab_ctx UNUSED, struct flow *fl,
+             uint32_t in_port, uint8_t *raw, size_t pkt_len, uint64_t dpid);
 
 void fab_port_host_dead_marker(void *p_arg, void *v_arg UNUSED, void *arg UNUSED);
 unsigned int fab_dpid_hash_func(const void *p);

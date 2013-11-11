@@ -51,14 +51,6 @@
        > ./configure    ## Pass LDFLAGS and CFLAGS if these are installed in non-
                         ## standard directories.
 
-    d) configure script options :
-
-       > --with-l2sw=y  ## Build l2sw module as a separate process (default)
-
-       OR, 
-        
-       > --with-l2sw=m  ## Build l2sw module as a modular entity inside the 
-                        ## controller. (performance mode)
 3. Build MuL 
 
    > make 

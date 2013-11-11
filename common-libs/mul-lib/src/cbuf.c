@@ -122,6 +122,17 @@ cbuf_list_purge(struct cbuf_head *head)
 
 } 
 
+static void
+init_cbuf(struct cbuf *b, size_t alloc_len)
+{
+    b->data = (unsigned char *)(b + 1);
+    b->tail = b->data;
+    b->end = (unsigned char *)b + alloc_len;
+    b->len = 0;
+    b->nofree = 0;
+    b->next = NULL;
+}
+
 struct cbuf *
 alloc_cbuf(size_t len)
 {
@@ -131,12 +142,21 @@ alloc_cbuf(size_t len)
     b = malloc(alloc_len);
     assert(b);
 
-    b->data = (unsigned char *)(b + 1);
-    b->tail = b->data;
-    b->end = (unsigned char *)b + alloc_len; 
-    b->len = 0;
-    b->nofree = 0;
-    b->next = NULL;
+    init_cbuf(b, alloc_len);
+
+    return b;
+}
+
+struct cbuf *
+zalloc_cbuf(size_t len)
+{
+    struct cbuf *b;
+    size_t      alloc_len = CBUF_ALIGN_SZ(len + CBUF_SZ);
+
+    b = calloc(1, alloc_len);
+    assert(b);
+
+    init_cbuf(b, alloc_len);
 
     return b;
 }

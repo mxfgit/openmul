@@ -104,7 +104,7 @@ of_dump_flow_cmd(struct flow *fl, uint32_t wildcards, uint64_t dpid)
     struct in_addr ip_addr = { .s_addr = 0 }; 
 
     len += snprintf(pbuf+len, FL_PBUF_SZ-len-1,
-                    "of-flow add switch 0x%llx ", dpid);
+                    "of-flow add switch 0x%llx ", U642ULL(dpid));
 
     wildcards = ntohl(wildcards);
     ip_wc = ((wildcards & OFPFW_NW_DST_MASK) >> OFPFW_NW_DST_SHIFT);
@@ -423,7 +423,7 @@ mul_dump_switches_brief(struct cbuf *b, bool free_buf)
         ofp_switch_states_tostr(string, ntohl(cofp_swb->state));
         len += snprintf(pbuf + len, SWITCH_BR_PBUF_SZ-len-1,
                         "0x%012llx    %-11s %-26s %-8d\r\n",
-                        ntohll(cofp_swb->switch_id.datapath_id),
+                        U642ULL(ntohll(cofp_swb->switch_id.datapath_id)),
                         string,
                         cofp_swb->conn_str,
                         ntohl(cofp_swb->n_ports));
@@ -490,7 +490,7 @@ mul_dump_switch_detail(struct cbuf *b, bool free_buf)
     char    *pbuf = calloc(1, MUL_SERVLET_PBUF_DFL_SZ);
     int     len = 0; 
     int     i = 0, n_ports;
-    struct ofp_switch_features *osf = (void *)(b->data);
+    struct c_ofp_switch_add *osf = CBUF_DATA(b);
     char    string[OFP_PRINT_MAX_STRLEN];
     
     if (!pbuf) {
@@ -503,11 +503,15 @@ mul_dump_switch_detail(struct cbuf *b, bool free_buf)
             / sizeof *osf->ports);
 
     len += snprintf(pbuf+len, MUL_SERVLET_PBUF_DFL_SZ-len-1, "Datapath-id : 0x%llx\r\n",
-                    ntohll(osf->datapath_id));
+                    U642ULL(ntohll(osf->datapath_id)));
     if (len >= MUL_SERVLET_PBUF_DFL_SZ-1) goto out_pbuf_err;
 
     len += snprintf(pbuf+len, MUL_SERVLET_PBUF_DFL_SZ-len-1, "Alias-id    : %d\r\n",
                     C_GET_ALIAS_IN_SWADD(osf));
+    if (len >= MUL_SERVLET_PBUF_DFL_SZ-1) goto out_pbuf_err;
+
+    len += snprintf(pbuf+len, MUL_SERVLET_PBUF_DFL_SZ-len-1, "OFP-ver     : %d\r\n",
+                    osf->ver);
     if (len >= MUL_SERVLET_PBUF_DFL_SZ-1) goto out_pbuf_err;
 
     len += snprintf(pbuf+len, MUL_SERVLET_PBUF_DFL_SZ-len-1,
@@ -518,9 +522,11 @@ mul_dump_switch_detail(struct cbuf *b, bool free_buf)
                     "Tables      : %d\r\n", osf->n_tables);
     if (len >= MUL_SERVLET_PBUF_DFL_SZ-1) goto out_pbuf_err; 
 
+#if 0 // This is deprecated with OF1.3.1
     len += snprintf(pbuf+len, MUL_SERVLET_PBUF_DFL_SZ-len-1,
                     "Actions     : 0x%x\r\n", ntohl(osf->actions));
     if (len >= MUL_SERVLET_PBUF_DFL_SZ-1) goto out_pbuf_err; 
+#endif
 
     memset(string, 0, 64);
     ofp_capabilities_tostr(string, ntohl(osf->capabilities));
@@ -550,7 +556,7 @@ mul_dump_switch_detail(struct cbuf *b, bool free_buf)
 
 
     for (i = 0; i < n_ports; i ++) {
-        struct ofp_phy_port   *p_info = &osf->ports[i];
+        struct c_sw_port   *p_info = &osf->ports[i];
 
         p_info->name[OFP_MAX_PORT_NAME_LEN-1] = '\0';
         memset(string, 0, OFP_PRINT_MAX_STRLEN);
@@ -558,7 +564,7 @@ mul_dump_switch_detail(struct cbuf *b, bool free_buf)
 
         len += snprintf(pbuf+len, MUL_SERVLET_PBUF_DFL_SZ-len-1,
                         "%-6d %-10s %02x:%02x:%02x:%02x:%02x:%02x %-15s\r\n",
-                        ntohs(p_info->port_no), p_info->name,
+                        ntohl(p_info->port_no), p_info->name,
                         p_info->hw_addr[0], p_info->hw_addr[1], p_info->hw_addr[2],
                         p_info->hw_addr[3], p_info->hw_addr[4], p_info->hw_addr[5],
                         string);
@@ -586,17 +592,31 @@ mul_dump_single_flow(struct c_ofp_flow_info *cofp_fi, void *arg,
     char     *pbuf;
     int      len = 0;
     size_t   action_len;
+    uint64_t dpid = U642ULL(ntohll(cofp_fi->datapath_id));
+    uint8_t  version;
+
+    version = c_app_switch_get_version_with_id(dpid);
+    if (version != OFP_VERSION && version !=  OFP_VERSION_131) {
+        cb_fn(arg, "Unable to parse flow:Unknown OFP version");
+        return;
+    }
 
     action_len = ntohs(cofp_fi->header.length) - sizeof(*cofp_fi);
         
     cb_fn(arg, print_sep);
-    pbuf = of_dump_flow(&cofp_fi->flow, cofp_fi->wildcards);
+    pbuf = of_dump_flow_generic(&cofp_fi->flow, &cofp_fi->mask);
     if (pbuf) {
         cb_fn(arg, pbuf);
         free(pbuf);
     }
 
-    pbuf = of_dump_actions(cofp_fi->actions, action_len);
+    if (version == OFP_VERSION)
+        pbuf = of10_dump_actions(cofp_fi->actions, action_len, false);
+    else if (version == OFP_VERSION_131)
+        pbuf = of131_dump_actions(cofp_fi->actions, action_len, false);
+    else {
+        NOT_REACHED();
+    }
     if (pbuf) {
         cb_fn(arg, pbuf);
         free(pbuf);
@@ -606,24 +626,29 @@ mul_dump_single_flow(struct c_ofp_flow_info *cofp_fi, void *arg,
     if (!pbuf) return; 
 
     len += snprintf(pbuf+len, MUL_SERVLET_PBUF_DFL_SZ-len-1,
-                    "%s: %hu\r\n", "Prio", ntohs(cofp_fi->priority));
+                    "%s: %hu ", "Prio", ntohs(cofp_fi->priority));
 
     len += snprintf(pbuf+len, MUL_SERVLET_PBUF_DFL_SZ-len-1,
-                    "%s: %s %s %s\r\n", "Flags",
+                    "%s: %s %s %s ", "Flags",
             cofp_fi->flags & C_FL_ENT_STATIC ? "static":"dynamic",
             cofp_fi->flags & C_FL_ENT_CLONE ? "clone": "no-clone",
             cofp_fi->flags & C_FL_ENT_LOCAL ? "local": "non-local"); 
     len += snprintf(pbuf+len, MUL_SERVLET_PBUF_DFL_SZ-len-1,
-                    "Datapath-id: 0x%llx\r\n", ntohll(cofp_fi->datapath_id));
+                    "Datapath-id: 0x%llx ",
+                    U642ULL(ntohll(cofp_fi->datapath_id)));
 
     if (cofp_fi->flags & C_FL_ENT_GSTATS) {
         len += snprintf(pbuf+len, MUL_SERVLET_PBUF_DFL_SZ-len-1,
-                        "Stats: Bytes %llu Packets %llu\r\n",
-                        ntohll(cofp_fi->byte_count), ntohll(cofp_fi->packet_count));
+                        "Stats: Bytes %llu Packets %llu ",
+                        U642ULL(ntohll(cofp_fi->byte_count)), 
+                        U642ULL(ntohll(cofp_fi->packet_count)));
         len += snprintf(pbuf+len, MUL_SERVLET_PBUF_DFL_SZ-len-1,
-                        "       Bps %s Pps %s\r\n",
+                        "Bps %s Pps %s",
                         cofp_fi->bps, cofp_fi->pps);
     }
+
+    len += snprintf(pbuf+len, MUL_SERVLET_PBUF_DFL_SZ-len-1,
+                    "%s", "\r\n");
             
     cb_fn(arg, pbuf);
     free(pbuf);

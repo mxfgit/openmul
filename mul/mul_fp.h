@@ -21,14 +21,17 @@
 #ifndef __MUL_FP_H__
 #define __MUL_FP_H__
 
-#define C_L2FDB_SZ (1048576)
+#define C_L2FDB_SZ (524288)
 #define C_FDB_ENT_PER_BKT 2
 
 struct c_l2fdb_ent
 {
-    uint64_t timestamp;
-    uint32_t pad;
-    uint16_t port;
+    union {
+        uint64_t ts;
+        time_t   timestamp;
+    }; 
+    uint32_t port;
+    uint16_t pad;
     uint8_t  valid;
     uint8_t  installed;
     uint8_t  mac[OFP_ETH_ALEN];
@@ -38,7 +41,10 @@ typedef struct c_l2fdb_ent c_l2fdb_ent_t;
 struct c_l2fdb_bkt
 {
     struct c_l2fdb_ent fdb_ent[C_FDB_ENT_PER_BKT] __attribute__((aligned(8)));
-    uint8_t  pad[16];
+    union {
+        struct c_l2fdb_bkt *next;
+        uint8_t  pad[16];
+    };
 };
 typedef struct c_l2fdb_bkt c_l2fdb_bkt_t;
 
@@ -66,9 +72,8 @@ c_l2fdb_ent_init(c_l2fdb_ent_t *ent, uint8_t *mac, uint16_t port)
 
     memcpy(ent->mac, mac, OFP_ETH_ALEN);
     ent->port = port;
-    ent->timestamp = g_get_monotonic_time();
+    ent->timestamp = time(NULL);
     ent->valid = 1;
 }
-
 
 #endif

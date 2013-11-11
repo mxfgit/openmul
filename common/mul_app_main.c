@@ -19,18 +19,15 @@
 #include "mul_common.h"
 #include "mul_vty.h"
 #include "mul_app_main.h"
+#include "mul_app_infra.h"
 #include "mul_services.h"
 
-struct c_app_service {
-   char app_name[MAX_SERV_NAME_LEN];
-   char service_name[MAX_SERV_NAME_LEN];
-   uint16_t  port;
-   void * (*service_priv_init)(void); 
-}c_app_service_tbl[] = {
+struct c_app_service c_app_service_tbl[MUL_MAX_SERVICE_NUM] = {
     { TR_APP_NAME, MUL_TR_SERVICE_NAME, MUL_TR_SERVICE_PORT, NULL },    
     { "MISC", MUL_ROUTE_SERVICE_NAME, 0, mul_route_service_get },
     { "CORE", MUL_CORE_SERVICE_NAME, C_AUX_APP_PORT, NULL },
-    { FAB_APP_NAME, MUL_FAB_CLI_SERVICE_NAME, MUL_FAB_CLI_PORT, NULL }
+    { FAB_APP_NAME, MUL_FAB_CLI_SERVICE_NAME, MUL_FAB_CLI_PORT, NULL },
+    { MAKDI_APP_NAME, MUL_MAKDI_SERVICE_NAME, MUL_MAKDI_CLI_PORT, NULL }
 };
 
 static int c_app_sock_init(c_app_hdl_t *hdl, char *server);
@@ -38,6 +35,9 @@ static int c_app_sock_init(c_app_hdl_t *hdl, char *server);
 /* MUL app main handle */ 
 c_app_hdl_t c_app_main_hdl;
 char *server = "127.0.0.1";
+struct mul_app_client_cb *app_cbs= NULL;
+
+static void c_app_event_notifier(void *h_arg, void *pkt_arg);
 
 static struct option longopts[] = 
 {
@@ -46,6 +46,18 @@ static struct option longopts[] =
     { "server-ip",              required_argument, NULL, 's'},
     { "vty-shell",              required_argument, NULL, 'V'},
 };
+
+#ifdef MUL_APP_V2_MLAPI
+int c_app_switch_add(c_app_hdl_t *hdl, c_ofp_switch_add_t *cofp_sa);
+int c_app_switch_del(c_app_hdl_t *hdl, c_ofp_switch_delete_t *cofp_sa);
+void c_switch_port_status(c_app_hdl_t *hdl, c_ofp_port_status_t *ofp_psts);
+void c_app_packet_in(c_app_hdl_t *hdl, c_ofp_packet_in_t *ofp_pin);
+void c_controller_reconn(c_app_hdl_t *hdl);
+void c_controller_disconn(c_app_hdl_t *hdl);
+
+#endif
+int c_app_infra_init(c_app_hdl_t *hdl);
+int c_app_infra_vty_init(c_app_hdl_t *hdl);
 
 /* Help information display. */
 static void
@@ -58,12 +70,6 @@ usage(char *progname, int status)
     printf("-h : Help\n");
 
     exit(status);
-}
-
-void
-mul_app_free_buf(void *b UNUSED)
-{
-    return;
 }
 
 static void
@@ -84,31 +90,12 @@ c_app_write_event(evutil_socket_t fd UNUSED, short events UNUSED, void *arg)
 }
 
 static void
-c_app_tx(void *conn_arg, struct cbuf *b)
-{
-    c_conn_t *conn = conn_arg;
-
-    c_wr_lock(&conn->conn_lock);
-
-    if (cbuf_list_queue_len(&conn->tx_q) > 1024) {
-        c_wr_unlock(&conn->conn_lock);
-        free_cbuf(b);
-        return;
-    }
-
-    cbuf_list_queue_tail(&conn->tx_q, b);
-
-    c_socket_write_nonblock_loop(conn, c_app_write_event_sched);
-
-    c_wr_unlock(&conn->conn_lock);
-}
-
-static void
 c_app_notify_reconnect(c_app_hdl_t *hdl)
 {
     struct cbuf *b;
 
     if (!hdl->ev_cb) {
+        c_controller_reconn(hdl);
         return;
     }
 
@@ -125,6 +112,7 @@ c_app_notify_disconnect(c_app_hdl_t *hdl)
     struct cbuf *b;
 
     if (!hdl->ev_cb) {
+        c_controller_disconn(hdl);
         return;
     }
 
@@ -146,7 +134,6 @@ c_app_reconn_timer(evutil_socket_t fd UNUSED, short event UNUSED,
         c_log_debug("Connection to controller restored");
         event_del((struct event *)(hdl->reconn_timer_event));
         event_free((struct event *)(hdl->reconn_timer_event));
-        hdl->conn.dead = 0;
         c_app_notify_reconnect(hdl);
         return;
     }
@@ -154,16 +141,23 @@ c_app_reconn_timer(evutil_socket_t fd UNUSED, short event UNUSED,
     evtimer_add(hdl->reconn_timer_event, &tv);
 }
 
-static void
+void
 c_app_reconnect(c_app_hdl_t *hdl)
 {
     struct timeval tv = { 1, 0 };
 
-    event_del((struct event *)(hdl->conn.rd_event));
-    event_del((struct event *)(hdl->conn.wr_event));
-    event_free((struct event *)(hdl->conn.rd_event));
-    event_free((struct event *)(hdl->conn.wr_event));
-    close(hdl->conn.fd);
+    if (hdl->conn.rd_event) {
+        event_del((struct event *)(hdl->conn.rd_event));
+        event_free((struct event *)(hdl->conn.rd_event));
+        hdl->conn.rd_event = NULL;
+    }
+    if (hdl->conn.wr_event) {
+        event_del((struct event *)(hdl->conn.wr_event));
+        event_free((struct event *)(hdl->conn.wr_event));
+        hdl->conn.wr_event = NULL;
+    }
+    c_conn_close(&hdl->conn);
+    c_conn_clear_buffers(&hdl->conn);
 
     c_app_notify_disconnect(hdl);
 
@@ -177,12 +171,7 @@ c_app_reconnect(c_app_hdl_t *hdl)
 static int
 c_app_recv_msg(void *hdl_arg, struct cbuf *b)
 {
-    c_app_hdl_t         *hdl = hdl_arg;
-
-    if (hdl->ev_cb) {
-        hdl->ev_cb(hdl_arg, b);
-    }
-
+    c_app_event_notifier(hdl_arg, b);
     return 0;
 }
 
@@ -194,11 +183,10 @@ c_app_read(evutil_socket_t fd, short events UNUSED, void *arg)
 
     ret = c_socket_read_nonblock_loop(fd, hdl, &hdl->conn, C_APP_RCV_BUF_SZ,
                                       (conn_proc_t)c_app_recv_msg,
-                                       of_get_data_len, c_app_of_hdr_valid,
+                                       of_get_data_len, of_hdr_valid,
                                       sizeof(struct ofp_header));
 
     if (c_recvd_sock_dead(ret)) {
-        hdl->conn.dead = 1;
         c_log_debug("Controller connection Lost..\n");
         perror("c_app_read");
         c_app_reconnect(hdl);
@@ -207,219 +195,46 @@ c_app_read(evutil_socket_t fd, short events UNUSED, void *arg)
     return;
 }
 
-int
-mul_app_command_handler(void *app_name UNUSED, void *b)
+static void
+c_app_event_notifier(void *h_arg, void *pkt_arg)
 {
-    c_app_tx(&c_app_main_hdl.conn, (struct cbuf *)(b));
-    return 0;
-}
+    struct cbuf         *b = pkt_arg;
+    struct ofp_header   *hdr;
+    c_app_hdl_t         *hdl = h_arg;
 
-int
-mul_register_app(void *app_arg UNUSED, char *app_name, uint32_t app_flags,
-                 uint32_t ev_mask, uint32_t n_dpid, uint64_t *dpid_list,
-                 void  (*ev_cb)(void *app_arg, void *pkt_arg))
-{
-    uint64_t *p_dpid = NULL;
-    struct cbuf *b;
-    c_ofp_register_app_t *reg_app;
-    int idx = 0;
-
-    b = of_prep_msg(sizeof(struct c_ofp_register_app) + 
-                    (n_dpid * sizeof(uint64_t)), C_OFPT_REG_APP, 0);
-
-    reg_app = (void *)(b->data);
-    strncpy(reg_app->app_name, app_name, C_MAX_APP_STRLEN-1);
-    reg_app->app_flags = htonl(app_flags);
-    reg_app->ev_mask = htonl(ev_mask);
-    reg_app->dpid = htonl(n_dpid);
-
-    p_dpid = (void *)(reg_app+1);
-    for (idx = 0; idx < n_dpid; idx++) {
-        *p_dpid++ = *dpid_list++;
+    if (!b) {
+        c_log_err("%s: invalid arg", FN);
+        return;
     }
 
-    c_app_main_hdl.ev_cb = ev_cb;
+    hdr = (void *)(b->data);
 
-    c_app_tx(&c_app_main_hdl.conn, b);
-
-    return 0;
-}
-
-int
-mul_unregister_app(char *app_name)
-{
-    struct cbuf *b;
-    c_ofp_unregister_app_t *unreg_app;
-
-    b = of_prep_msg(sizeof(*unreg_app), C_OFPT_UNREG_APP, 0);
-    unreg_app = (void *)(b->data);
-    strncpy(unreg_app->app_name, app_name, C_MAX_APP_STRLEN-1);
-
-    c_app_tx(&c_app_main_hdl.conn, b);
-
-    return 0;
-}
-
-void
-mul_app_send_pkt_out(void *arg UNUSED, uint64_t dpid, void *parms_arg)
-{
-    struct of_pkt_out_params  *parms = parms_arg;
-    void                      *out_data;
-    struct cbuf               *b;
-    uint8_t                   *act;
-    struct c_ofp_packet_out   *cofp_po;
-
-    b = of_prep_msg(sizeof(*cofp_po) + parms->action_len + parms->data_len,
-                    OFPT_PACKET_OUT, 0);
-
-    cofp_po = (void *)(b->data);
-    cofp_po->datapath_id = htonll(dpid);
-    cofp_po->in_port = htons(parms->in_port);
-    cofp_po->buffer_id = htonl(parms->buffer_id); 
-    cofp_po->actions_len = htons(parms->action_len);
-
-    act = (void *)(cofp_po+1);
-    memcpy(act, parms->action_list, parms->action_len);
-
-    if (parms->data_len) {
-        out_data = (void *)(act + parms->action_len);
-        memcpy(out_data, parms->data, parms->data_len);
+    switch(hdr->type) {
+#ifdef MUL_APP_V2_MLAPI
+    case C_OFPT_SWITCH_ADD: 
+        if (!hdl->ev_cb)
+            c_app_switch_add(hdl, (void *)hdr);
+        break;
+    case C_OFPT_SWITCH_DELETE:
+        if (!hdl->ev_cb)
+            c_app_switch_del(hdl, (void *)hdr);
+        break;
+    case C_OFPT_PACKET_IN: 
+        if (!hdl->ev_cb)
+            c_app_packet_in(hdl, (void *)hdr);
+        break;
+    case C_OFPT_PORT_STATUS:
+        if (!hdl->ev_cb)
+            c_switch_port_status(hdl, (void *)hdr);
+        break;
+#endif
+    default:
+        break;
     }
 
-    mul_app_command_handler(NULL, b);
-
-    return;
+    if (hdl->ev_cb)
+        hdl->ev_cb(hdl, b);
 }
-
-static struct cbuf *
-mul_app_prep_flow_add(uint64_t dpid, struct flow *fl, uint32_t buffer_id,
-                      void *actions, size_t action_len, uint16_t itimeo,
-                      uint16_t htimeo, uint32_t wildcards, uint16_t prio,
-                      uint8_t flags)
-{
-    c_ofp_flow_mod_t            *cofp_fm;
-    void                        *act;
-    struct cbuf                 *b;
-    size_t                      tot_len = 0;
-
-    tot_len = sizeof(*cofp_fm) + action_len; 
-
-    b = of_prep_msg(tot_len, C_OFPT_FLOW_MOD, 0);
-
-    cofp_fm = (void *)(b->data);
-    if (flags & C_FL_ENT_SWALIAS) {
-        cofp_fm->sw_alias = htonl((uint32_t)dpid);
-    } else {
-        cofp_fm->datapath_id = htonll(dpid);
-    }
-    cofp_fm->command = C_OFPC_ADD;
-    cofp_fm->flags = flags;
-    memcpy(&cofp_fm->flow, fl, sizeof(*fl));
-    cofp_fm->wildcards = htonl(wildcards);
-    cofp_fm->priority = htons(prio);
-    cofp_fm->itimeo = htons(itimeo);
-    cofp_fm->htimeo = htons(htimeo);
-    cofp_fm->buffer_id = htonl(buffer_id);
-    cofp_fm->oport = OFPP_NONE;
-
-    act = (void *)(cofp_fm+1);
-    memcpy(act, actions, action_len);
-
-    return b;
-}
-
-int
-mul_app_send_flow_add(void *app_name UNUSED, void *sw_arg UNUSED,
-                      uint64_t dpid, struct flow *fl, uint32_t buffer_id,
-                      void *actions, size_t action_len, uint16_t itimeo, 
-                      uint16_t htimeo, uint32_t wildcards, uint16_t prio, 
-                      uint8_t flags)
-{
-    struct cbuf                 *b;
-
-    b = mul_app_prep_flow_add(dpid, fl, buffer_id, actions, action_len,
-                              itimeo, htimeo, wildcards, prio, flags);
-    mul_app_command_handler(NULL, b);
-
-    return 0;
-}
-
-int
-mul_service_send_flow_add(void *service,
-                          uint64_t dpid, struct flow *fl, uint32_t buffer_id,
-                          void *actions, size_t action_len, uint16_t itimeo, 
-                          uint16_t htimeo, uint32_t wildcards, uint16_t prio, 
-                          uint8_t flags)
-{
-    struct cbuf                 *b;
-
-    b = mul_app_prep_flow_add(dpid, fl, buffer_id, actions, action_len,
-                              itimeo, htimeo, wildcards, prio, flags);
-    c_service_send(service, b);
-
-    return 0;
-}
-
-
-static struct cbuf *
-mul_app_prep_flow_del(uint64_t dpid, struct flow *fl,
-                      uint32_t wildcards, uint16_t oport,
-                      uint16_t prio, uint8_t flags)
-{
-    c_ofp_flow_mod_t            *cofp_fm;
-    struct cbuf                 *b;
-    size_t                      tot_len = 0;
-
-    tot_len = sizeof(*cofp_fm); 
-
-    b = of_prep_msg(tot_len, C_OFPT_FLOW_MOD, 0);
-
-    cofp_fm = (void *)(b->data);
-    if (flags & C_FL_ENT_SWALIAS) {
-        cofp_fm->sw_alias = htonl((uint32_t)dpid);
-    } else {
-        cofp_fm->datapath_id = htonll(dpid);
-    }
-    cofp_fm->command = C_OFPC_DEL;
-    cofp_fm->priority = htons(prio);
-    cofp_fm->flags = flags;
-    memcpy(&cofp_fm->flow, fl, sizeof(*fl));
-    cofp_fm->wildcards = htonl(wildcards);
-    cofp_fm->oport = htons(oport);
-
-    return b;
-}
-
-int
-mul_app_send_flow_del(void *app_name UNUSED, void *sw_arg UNUSED, 
-                      uint64_t dpid, struct flow *fl,
-                      uint32_t wildcards, uint16_t oport, 
-                      uint16_t prio, uint8_t flags)
-{
-    struct cbuf                 *b;
-
-    b = mul_app_prep_flow_del(dpid, fl, wildcards, oport, prio, flags);
-
-    mul_app_command_handler(NULL, b);
-
-    return 0;
-}
-
-int
-mul_service_send_flow_del(void *service, 
-                      uint64_t dpid, struct flow *fl,
-                      uint32_t wildcards, uint16_t oport, 
-                      uint16_t prio, uint8_t flags)
-{
-    struct cbuf                 *b;
-
-    b = mul_app_prep_flow_del(dpid, fl, wildcards, oport, prio, flags);
-    c_service_send(service, b);
-
-    return 0;
-}
-
-
 
 static int 
 c_app_init(c_app_hdl_t *hdl)
@@ -439,6 +254,7 @@ c_app_sock_init(c_app_hdl_t *hdl, char *server)
         return -1;
     }
 
+    c_conn_prep(&hdl->conn);
     hdl->conn.rd_event = event_new(hdl->base,
                                    hdl->conn.fd,
                                    EV_READ|EV_PERSIST,
@@ -574,6 +390,9 @@ c_app_vty_main(void *arg)
 
     cmd_init(1);
     vty_init(hdl->vty_master);
+#ifdef MUL_APP_V2_MLAPI
+    c_app_infra_vty_init(hdl); 
+#endif
     modvty__initcalls(hdl);
     install_element(ENABLE_NODE, &show_app_version_cmd);
     sort_node();
@@ -656,6 +475,7 @@ main(int argc, char **argv)
     clog_set_level(NULL, CLOG_DEST_STDOUT, LOG_DEBUG);
 
     c_app_init(&c_app_main_hdl);
+    c_app_infra_init(&c_app_main_hdl);
     while (c_app_sock_init(&c_app_main_hdl, server) < 0) { 
         c_log_debug("Trying to connect..\n");
         sleep(1);

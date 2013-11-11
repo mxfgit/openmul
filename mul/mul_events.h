@@ -59,28 +59,11 @@ c_conn_events_del(c_conn_t *conn)
 }
 
 static inline void
-c_conn_close(c_conn_t *conn)
-{
-    if (conn->fd > 0) 
-        close(conn->fd);
-    conn->fd = 0;
-    conn->dead = 1;
-}
-
-static inline void
 c_conn_destroy(c_conn_t *conn)
 {
     c_conn_events_del(conn);
     c_conn_close(conn);
-
-    if (conn->cbuf) {
-        free_cbuf(conn->cbuf);
-        conn->cbuf = NULL;
-    }
-
-    c_wr_lock(&conn->conn_lock);
-    cbuf_list_purge(&conn->tx_q);
-    c_wr_unlock(&conn->conn_lock);
+    c_conn_clear_buffers(conn);
 }
 
 static inline void
@@ -92,13 +75,7 @@ c_conn_assign_fd(c_conn_t *conn, int fd)
     if (fd <= 0) return;
 
     conn->fd = fd;
-    conn->dead = 0;
-    if (conn->cbuf) {
-        free_cbuf(conn->cbuf);
-        conn->cbuf = NULL;
-    }
-
-    cbuf_list_purge(&conn->tx_q);
+    c_conn_prep(conn);
     
     memset(conn->conn_str, 0, sizeof(conn->conn_str));
     if (getpeername(fd, (void *)&peer_addr, &peer_sz) < 0) {

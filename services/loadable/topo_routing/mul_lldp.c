@@ -527,41 +527,41 @@ err_out:
 }
 
 /**
- * lldp_switch_add -
+ * lldp_switch_add_cb -
  *
  * Switch add event Handler
  */
-int
-lldp_switch_add(void *app_arg, c_ofp_switch_add_t *ofp_sa)
+static void
+lldp_switch_add(mul_switch_t *sw)
 {
-    uint64_t dpid = ntohll(ofp_sa->datapath_id);
+    uint64_t dpid = sw->dpid;
     lldp_switch_t *new_switch;
-    struct ofp_phy_port *port;
-    uint16_t i;
-    uint16_t num_port;
     struct flow fl;      /* Flow entry for lldp packer handler */
-    uint32_t wildcards = OFPFW_ALL;
+    struct flow mask;
+
+    of_mask_set_dc_all(&mask);
 
     c_wr_lock(&topo_hdl->switch_lock);
 
-    if (g_hash_table_lookup(topo_hdl->switches,&dpid)){
+    if (g_hash_table_lookup(topo_hdl->switches, &dpid)){
         c_wr_unlock(&topo_hdl->switch_lock);
         c_log_err("%s: switch (0x%llx) already exists", FN, 
                   (unsigned long long)dpid);
-        return -1;
+        return;
     }
 
     if (!(new_switch = calloc(1, sizeof(*new_switch)))) {
         c_wr_unlock(&topo_hdl->switch_lock);
         c_log_err("%s: lldp_switch alloc failed", FN);
-        return -1;
+        return;
     }
 
     new_switch->dpid = dpid;
-    new_switch->alias_id = C_GET_ALIAS_IN_SWADD(ofp_sa);
+    new_switch->alias_id = sw->alias_id;
     if (lldp_add_switch_to_imap(topo_hdl, new_switch) < 0) {
         c_wr_unlock(&topo_hdl->switch_lock);
-        c_log_err("%s: lldp_switch imap add failed", FN);
+        c_log_err("%s: lldp_switch (0x%llx) imap add failed",
+                  FN, U642ULL(dpid));
         goto err_free;
     }
 
@@ -587,6 +587,7 @@ lldp_switch_add(void *app_arg, c_ofp_switch_add_t *ofp_sa)
     c_rw_lock_init(&new_switch->lock);
     lldp_switch_ref(new_switch);
 
+#if 0
     num_port = ( ntohs((ofp_sa->header).length) - 
                 sizeof(c_ofp_switch_add_t) ) / sizeof(struct ofp_phy_port);
 
@@ -594,7 +595,7 @@ lldp_switch_add(void *app_arg, c_ofp_switch_add_t *ofp_sa)
         port = &((struct ofp_phy_port *) &(ofp_sa[1]))[i];
         lldp_port_add(app_arg, new_switch, port, false);
     }
-
+#endif
 
     g_hash_table_insert(topo_hdl->switches, &new_switch->dpid, new_switch);
 
@@ -604,23 +605,17 @@ lldp_switch_add(void *app_arg, c_ofp_switch_add_t *ofp_sa)
 
     c_wr_unlock(&topo_hdl->switch_lock);
 
-#if 0
-    /* Clear all entries for this switch */
-    mul_app_send_flow_del(MUL_TR_SERVICE_NAME, NULL, dpid, &fl,
-                          OFPFW_ALL, OFPP_NONE, 0, C_FL_ENT_NOCACHE);
-#endif
-
     /* Add Flow to receive LLDP Packet type */
     memset(&fl, 0, sizeof(fl));
-    wildcards &= ~(OFPFW_DL_TYPE);
+    
     fl.dl_type = htons(0x88cc);
+    of_mask_set_dl_type(&mask);
 
-
-    mul_app_send_flow_add(MUL_TR_SERVICE_NAME, app_arg, dpid, &fl, (uint32_t)-1,
-                          NULL, 0, 0, 0, wildcards, C_FL_PRIO_DFL,
+    mul_app_send_flow_add(MUL_TR_SERVICE_NAME, NULL, dpid, &fl, &mask,
+                          (uint32_t)-1, NULL, 0, 0, 0, C_FL_PRIO_DFL,
                           C_FL_ENT_LOCAL);
 
-    return 0;
+    return;
 
 err_free_ports:
     g_hash_table_destroy(new_switch->ports);
@@ -628,7 +623,7 @@ err_putalias:
     lldp_del_switch_from_imap(topo_hdl, new_switch);
 err_free:
     free(new_switch);
-    return -1;
+    return;
 }
 
 /**
@@ -665,9 +660,10 @@ __lldp_max_aliasid_reset(topo_hdl_t *hdl)
  *
  * Switch delete event handler
  */
-void
-lldp_switch_delete(uint64_t dpid)
+static void
+lldp_switch_delete(mul_switch_t *sw)
 {
+    uint64_t dpid = sw->dpid;
     c_wr_lock(&topo_hdl->switch_lock);
 
     /* rest of deleting handled by destroy callback */
@@ -726,15 +722,15 @@ lldp_packet_handler(uint64_t receiver_id, uint16_t receiver_port, lldp_pkt_t *pk
  *
  * Adds new port to specified switch
  */
-int
+static int
 lldp_port_add(void *app_arg, lldp_switch_t *this_switch, 
-              struct ofp_phy_port *port_info, bool need_lock)
+              mul_port_t *port_info, bool need_lock)
 {
     uint32_t config_mask;
     uint32_t state_mask;
     lldp_port_t *new_port;
 
-    uint16_t port_no = ntohs(port_info->port_no);
+    uint16_t port_no = port_info->port_no;
 
     if (port_no > OFPP_MAX){
         /* ignore control ports */
@@ -763,17 +759,17 @@ lldp_port_add(void *app_arg, lldp_switch_t *this_switch,
         goto err_out;
     }
     new_port->lldp_sw = this_switch;
-    new_port->config = ntohl(port_info->config);
-    new_port->state = ntohl(port_info->state);
+    new_port->config = port_info->config;
+    new_port->state = port_info->state;
     new_port->status = LLDP_PORT_STATUS_INIT;
     new_port->port_no = port_no;
-    memcpy(new_port->hw_addr,port_info->hw_addr,OFP_ETH_ALEN);
+    memcpy(new_port->hw_addr, port_info->hw_addr, OFP_ETH_ALEN);
 
     /* add port to switch entry */
     g_hash_table_insert(this_switch->ports, &(new_port->port_no), new_port);
 
-    config_mask = ntohl(port_info->config);
-    state_mask = ntohl(port_info->state);
+    config_mask = port_info->config;
+    state_mask = port_info->state;
 
     /* if port is connected to something send lldp packet */
     if (!(config_mask & OFPPC_PORT_DOWN) && !(state_mask & OFPPS_LINK_DOWN)) {
@@ -804,12 +800,13 @@ err_out:
  */
 static void
 lldp_port_add_with_dpid(void *app_arg, uint64_t dpid,
-                        struct ofp_phy_port *port_info) 
+                        mul_port_t *port_info) 
 {
     lldp_switch_t *lldp_sw;
 
     if(!(lldp_sw = fetch_and_retain_switch(dpid))) {
         c_log_err("%s: No switch 0x%llx found", FN, dpid);
+        return;
     }
 
     lldp_port_add(app_arg, lldp_sw, port_info, true);
@@ -824,24 +821,16 @@ lldp_port_add_with_dpid(void *app_arg, uint64_t dpid,
  * PORT_MOD event handler
  */
 static int
-lldp_port_mod(void *app_arg, uint64_t switch_id, c_ofp_port_status_t *ofp_psts)
+lldp_port_mod(void *app_arg, uint64_t switch_id, mul_port_t *port_info,
+              bool up_down)
 {
     lldp_switch_t *this_switch = NULL;
     lldp_port_t *this_port = NULL;
-    struct ofp_phy_port *ofpp = &ofp_psts->desc;
-    uint32_t config_mask, state_mask;
     uint16_t port_no;
 
-    port_no = ntohs(ofp_psts->desc.port_no);
+    port_no = port_info->port_no;
     if (port_no > OFPP_MAX){
         /* ignore control ports */
-        return 0;
-    }
-
-    config_mask = ntohl(ofp_psts->config_mask);
-    state_mask  = ntohl(ofp_psts->state_mask);
-
-    if (!config_mask || !state_mask) {
         return 0;
     }
 
@@ -851,19 +840,18 @@ lldp_port_mod(void *app_arg, uint64_t switch_id, c_ofp_port_status_t *ofp_psts)
     }
 
     c_wr_lock(&this_switch->lock);
-    if (!(this_port = __lldp_port_find(this_switch, port_no))) {
+    if (!(this_port = __lldp_port_find(this_switch, port_info->port_no))) {
         c_log_err("%s: Switch-id 0x%llx port %hu not found", 
-                  FN, switch_id, port_no);
+                  FN, switch_id, port_info->port_no);
         c_wr_unlock(&this_switch->lock);
         lldp_switch_unref(this_switch);
         return -1;
     }
 
-    this_port->state = ntohl(ofpp->state);
-    this_port->config = ntohl(ofpp->config);
+    this_port->state = port_info->state;
+    this_port->config = port_info->config;
 
-    if (this_port->config & OFPPC_PORT_DOWN ||
-        this_port->state & OFPPS_LINK_DOWN) {
+    if (!up_down) {
 
         /* The port was connected to some other switch,
          * but the port is administratively disabled or link is disconnected.
@@ -886,17 +874,18 @@ lldp_port_mod(void *app_arg, uint64_t switch_id, c_ofp_port_status_t *ofp_psts)
     return 0;
 }
 
+
 /**
  * lldp_port_delete -
  *
  * PORT_STATUS - PORT_DELETE event handler
  */
 static int
-lldp_port_delete(uint64_t switch_id, struct ofp_phy_port *port_info)
+lldp_port_delete(uint64_t switch_id, mul_port_t *port_info)
 {
     lldp_switch_t *this_switch;
     lldp_port_t *this_port;
-    uint16_t port_no = ntohs(port_info->port_no);
+    uint16_t port_no = port_info->port_no;
 
     if (port_no > OFPP_MAX){
         /* ignore control ports */
@@ -927,33 +916,93 @@ lldp_port_delete(uint64_t switch_id, struct ofp_phy_port *port_info)
     return 0;
 }
 
+/**
+ * lldp_port_add_cb -
+ *
+ * Application port add callback 
+ */
+static void
+lldp_port_add_cb(mul_switch_t *sw,  mul_port_t *port)
+{
+    return lldp_port_add_with_dpid(NULL, sw->dpid, port);
+}
 
 /**
- * lldp_port_status_handler -
+ * lldp_port_del_cb -
  *
- * PORT_STATUS event handler
+ * Application port del callback 
  */
-void
-lldp_port_status_handler(void *app_arg, c_ofp_port_status_t *port_stat)
+static void
+lldp_port_del_cb(mul_switch_t *sw,  mul_port_t *port)
 {
-    uint64_t receiver_id = ntohll(port_stat->datapath_id);
+    lldp_port_delete(sw->dpid, port);
+}
 
-    switch (port_stat->reason){
-    case OFPPR_ADD:
-        lldp_port_add_with_dpid(app_arg, receiver_id, &port_stat->desc);
+/**
+ * lldp_port_link_chg -
+ *
+ * Application port link change callback 
+ */
+static void
+lldp_port_link_chg(mul_switch_t *sw,  mul_port_t *port, bool link)
+{
+    lldp_port_mod(NULL, sw->dpid, port, link); 
+}
+
+/**
+ * lldp_port_adm_chg -
+ *
+ * Application port admin change callback 
+ */
+static void
+lldp_port_adm_chg(mul_switch_t *sw,  mul_port_t *port, bool adm)
+{
+    lldp_port_mod(NULL, sw->dpid, port, adm); 
+}
+
+/**
+ * lldp_packet_in_cb -
+ *
+ * Application packet in callback 
+ */
+static void
+lldp_packet_in_cb(mul_switch_t *sw, struct flow *fl UNUSED, uint32_t inport,
+                 uint32_t buffer_id UNUSED, uint8_t *raw, size_t pkt_len UNUSED)
+{
+    uint64_t receiver_id = sw->dpid;
+
+    /* check packet validity */
+    /* check ether type. */
+    struct ethernet2_header *head = (struct ethernet2_header *)raw;
+    uint16_t ethertype = ntohs(head->ethertype);
+
+    switch (ethertype){
+    case 0x88cc:
+        /* LLDP */
+        /* FIXME - port is truncated */
+        lldp_packet_handler(receiver_id, inport, (lldp_pkt_t *)raw);
         break;
-    case OFPPR_MODIFY:
-        lldp_port_mod(app_arg, receiver_id, port_stat);
-        break;
-    case OFPPR_DELETE:
-        lldp_port_delete(receiver_id, &port_stat->desc);
-        break;
+
+        /* ADD other pkt types as needed */
     default:
-        c_log_err("%s: unknown reason %d", FN, port_stat->reason);
-        break;
+        c_log_debug("%s: ethertype 0x%hx not recognized ", FN, ethertype);
+        return;
     }
 }
 
+struct mul_app_client_cb lldp_app_cbs = {
+    .switch_priv_alloc = NULL,
+    .switch_priv_free = NULL,
+    .switch_add_cb =  lldp_switch_add,
+    .switch_del_cb = lldp_switch_delete,
+    .switch_priv_port_alloc = NULL,
+    .switch_priv_port_free = NULL,
+    .switch_port_add_cb = lldp_port_add_cb,
+    .switch_port_del_cb = lldp_port_del_cb,
+    .switch_port_link_chg = lldp_port_link_chg,
+    .switch_port_adm_chg = lldp_port_adm_chg,
+    .switch_packet_in = lldp_packet_in_cb 
+};
 
 /**
  * lldp_cleanall_switches -
@@ -1005,7 +1054,7 @@ void
 lldp_tx(void *app_arg, lldp_switch_t *lldp_switch, lldp_port_t *lldp_port)
 {
     struct of_pkt_out_params params;
-    struct ofp_action_output op_act;
+    struct mul_act_mdata mdata;
     lldp_pkt_t lldp_data;
     uint8_t debug_hwaddr_buf[LLDP_HWADDR_DEBUG_STRING_LEN];
 
@@ -1018,18 +1067,20 @@ lldp_tx(void *app_arg, lldp_switch_t *lldp_switch, lldp_port_t *lldp_port)
     conv_hwaddr(lldp_port->hw_addr, debug_hwaddr_buf);
 
     /* prepare required params for mul_app_send_pkt_out */
+    mul_app_act_alloc(&mdata);
+    mdata.only_acts = true;
+    mul_app_act_set_ctors(&mdata, lldp_switch->dpid);
+    mul_app_action_output(&mdata, (uint32_t)(lldp_port->port_no));
     params.buffer_id = (uint32_t)(-1);
-    params.in_port = OFPP_NONE;
-    params.action_list = &op_act;
-    of_make_action_output((char **)&params.action_list, sizeof(op_act), 
-                          lldp_port->port_no);
-    params.action_len = sizeof(op_act);
+    params.in_port = OF_NO_PORT;
+    params.action_list = mdata.act_base;
+    params.action_len = mul_app_act_len(&mdata);
     params.data_len = sizeof(lldp_pkt_t);
     params.data = &lldp_data;
 
     /* tx the packet */
     mul_app_send_pkt_out(app_arg, lldp_switch->dpid, &params);
-
+    mul_app_act_free(&mdata);
 }
 
 /**

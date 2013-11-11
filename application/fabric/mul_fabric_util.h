@@ -56,17 +56,17 @@ fab_free(void *buf)
 /**
  * fab_add_tenant_id -
  * @fl : flow pointer
- * @wildcards : wildcard pointer to  be updated
+ * @mask : mask to  be updated
  * @tenant_id : tenant id
  *
  * Embed a tenant-id in flow struct 
  */
 static inline void
-fab_add_tenant_id(struct flow *fl, uint32_t *wildcards, uint16_t tenant_id)
+fab_add_tenant_id(struct flow *fl, struct flow *mask, uint16_t tenant_id)
 {
 
-    if (wildcards)
-        *wildcards &= ~(OFPFW_DL_VLAN);
+    if (mask)
+        of_mask_set_dl_vlan(mask);
 
     fl->dl_vlan = htons(tenant_id);
 }
@@ -74,16 +74,16 @@ fab_add_tenant_id(struct flow *fl, uint32_t *wildcards, uint16_t tenant_id)
 /**
  * fab_reset_tenant_id -
  * @fl : flow pointer
- * @wildcards : wildcard pointer to be updated
+ * @mask: mask to be updated
  *
  * reset tenant id in flow struct 
  */
 static inline void
-fab_reset_tenant_id(struct flow *fl, uint32_t *wildcards)
+fab_reset_tenant_id(struct flow *fl, struct flow *mask)
 {
 
-    if (wildcards)
-        *wildcards |= (OFPFW_DL_VLAN);
+    if (mask)
+        of_mask_clr_dl_vlan(mask);
 
     fl->dl_vlan = 0;
 }

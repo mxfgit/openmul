@@ -34,6 +34,9 @@ const char *pid_file = C_PID_PATH;
 /* handle to controller to pass around */
 ctrl_hdl_t ctrl_hdl;
 
+/* rate-limiter for critical path logs */
+C_RL_DEFINE(crl, 100, 100);
+
 /* Help information display. */
 static void
 usage(char *progname, int status)
@@ -70,7 +73,6 @@ of_ctrl_init(ctrl_hdl_t *c_hdl, size_t nthreads, size_t n_appthreads,
 
     return 0;
 }
- 
 
 int
 main(int argc, char **argv)

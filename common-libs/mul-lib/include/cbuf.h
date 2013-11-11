@@ -62,6 +62,7 @@ void cbuf_list_queue(struct cbuf_head *head,
 struct cbuf *cbuf_list_dequeue(struct cbuf_head *head);
 void cbuf_list_purge(struct cbuf_head *head);
 struct cbuf *alloc_cbuf(size_t len);
+struct cbuf *zalloc_cbuf(size_t len);
 void *cbuf_put(struct cbuf *b, size_t len);    
 size_t cbuf_headroom(struct cbuf *b);
 struct cbuf *cbuf_realloc_tailroom(struct cbuf *b, size_t room, int do_free);

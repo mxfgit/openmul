@@ -19,6 +19,7 @@
 #include "mul_tr.h"
 
 tr_struct_t *tr_hdl;
+extern struct mul_app_client_cb lldp_app_cbs;
 
 /**
  * __tr_get_max_switch_alias -
@@ -281,49 +282,6 @@ tr_create_service(tr_struct_t *tr_hdl UNUSED)
 }
 
 /**
- * tr_packet_in_handler -
- *
- * General PACKET_IN event handler
- */
-static int
-tr_packet_in_handler(c_ofp_packet_in_t *ofp_pin)
-{
-	uint64_t receiver_id = ntohll(ofp_pin->datapath_id);
-	uint16_t port_id = ntohs(ofp_pin->in_port);
-
-	lldp_pkt_t *lldp_pkt;
-
-	/* check packet validity */
-	/* check ether type. */
-	struct ethernet2_header *head = (struct ethernet2_header *)ofp_pin->data;
-	uint16_t ethertype = ntohs(head->ethertype);
-
-	switch (ethertype){
-	case 0x88cc:
-		/* LLDP */
-		lldp_pkt = (lldp_pkt_t *)ofp_pin->data;
-		return lldp_packet_handler(receiver_id, port_id, lldp_pkt);
-
-		/* ADD other pkt types as needed */
-	default:
-		c_log_debug("%s: ethertype 0x%hx not recognized ",FN,ethertype);
-		return -1;
-	}
-
-}
-
-/**
- * tr_port_status_handler -
- *
- * PORT_STATUS event handler
- */
-static void
-tr_port_status_handler(void *app_arg, c_ofp_port_status_t *port_stat)
-{
-    return lldp_port_status_handler(app_arg, port_stat);
-}
-
-/**
  * tr_cleanall -
  *
  * Clean all info TR module is holding
@@ -338,74 +296,25 @@ tr_cleanall(tr_struct_t *tr)
 }
 
 /**
- * tr_event_notifier -
- *
- * Topo-Routing module main Event handler
+ * tr_core_closed - 
  */
 static void
-tr_event_notifier(void *app_arg, void *pkt_arg)
+tr_core_closed(void)
 {
-	struct cbuf *b = pkt_arg;
-	struct ofp_header *hdr;
-	uint64_t dpid;
-	if (!b) {
-		c_log_err("%s: Invalid arg", FN);
-		return;
-	}
+    c_log_info("%s: ", FN);
+    tr_cleanall(tr_hdl);
+    return;
+}
 
-	hdr = (void *)(b->data);
-
-	switch(hdr->type) {
-	case C_OFPT_SWITCH_ADD:
-	{
-		c_ofp_switch_add_t *ofp_sa = (void *)(hdr);
-		dpid = ntohll(ofp_sa->datapath_id);
-		if (lldp_switch_add(app_arg, ofp_sa) == 0)
-			c_log_debug("LLDP Switch 0x%llx added", (unsigned long long) dpid);
-
-		break;
-	}
-	case C_OFPT_SWITCH_DELETE:
-	{
-		c_ofp_switch_delete_t *ofp_sd = (void *)(hdr);
-		dpid =  ntohll(ofp_sd->datapath_id);
-		lldp_switch_delete(dpid);
-		c_log_debug("LLDP Switch 0x%llx deleted", (unsigned long long)dpid);
-
-		break;
-	}
-	case C_OFPT_PACKET_IN:
-	{
-		c_ofp_packet_in_t *ofp_pin = (void *)(hdr);
-
-		tr_packet_in_handler(ofp_pin);
-
-		break;
-	}
-	case C_OFPT_PORT_STATUS:
-	{
-		c_ofp_port_status_t *ofp_psts = (void *)(hdr);
-		/*            c_log_debug("Switch 0x%llx port status", (unsigned long long) ntohll(ofp_psts->datapath_id)); */
-		tr_port_status_handler(app_arg, ofp_psts);
-		break;
-	}
-	case C_OFPT_RECONN_APP:
-		mul_register_app(NULL, TR_APP_NAME, C_APP_ALL_SW, C_APP_ALL_EVENTS,
-                         0, NULL, tr_event_notifier);
-		break;
-	case C_OFPT_NOCONN_APP:
-		/*
-		 * FIXME : This is not optimal. What we really need is
-		 * wait for reconn and stale out switches which might go
-		 * during wait period. And the delete all fdbs for existing
-		 * switches which we might have learnt to maintain coherency.
-		 */
-        tr_cleanall(tr_hdl);
-		break;
-	default:
-		c_log_err("%s: Unknown event type %u", FN, hdr->type);
-		return;
-	}
+/**
+ * tr_core_reconn -
+ */
+static void
+tr_core_reconn(void)
+{
+    c_log_info("%s:Core rejoin  ", FN);
+    mul_register_app_cb(NULL, TR_APP_NAME, C_APP_ALL_SW, C_APP_ALL_EVENTS,
+                        0, NULL, &lldp_app_cbs);
 }
 
 /**
@@ -441,8 +350,11 @@ tr_module_init(void *ctx)
         /* We can still continue albeit with some limited ability */
     }
 
-    mul_register_app(NULL, TR_APP_NAME, C_APP_ALL_SW, C_APP_ALL_EVENTS,
-                     0, NULL, tr_event_notifier);
+    lldp_app_cbs.core_conn_closed = tr_core_closed;
+    lldp_app_cbs.core_conn_reconn = tr_core_reconn;
+    
+    mul_register_app_cb(NULL, TR_APP_NAME, C_APP_ALL_SW, C_APP_ALL_EVENTS,
+                        0, NULL, &lldp_app_cbs);
 }
 
 /**

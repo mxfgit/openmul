@@ -17,8 +17,11 @@ INCLUDES = -I. -I$(top_srcdir)/mul -I$(top_srcdir)/common/ \
 
 DEFS = @DEFS@ -DSYSCONFDIR=\"$(sysconfdir)/\"
 
+mull2sw_CFLAGS = -DMUL_APP_V2_MLAPI
+
 mull2sw_SOURCES = l2switch.c $(top_srcdir)/common/mul_app_main.c \
                $(top_srcdir)/common/mul_of_msg.c \
+               $(top_srcdir)/common/mul_app_infra.c \
                $(top_srcdir)/common/mul_service.c
 
 LD_FLAGS= @LDFLAGS@ 

@@ -127,11 +127,7 @@ lldp_get_switch_from_imap(topo_hdl_t *topo, int idx)
 
 struct cbuf *lldp_service_neigh_request(uint64_t dpid, uint32_t xid);
 void lldp_switch_traverse_all(topo_hdl_t *topo_hdl, GHFunc iter_fn, void *arg);
-int lldp_switch_add(void *app_arg, c_ofp_switch_add_t *ofp_sa);
-void lldp_switch_delete(uint64_t dpid);
 void lldp_port_traverse_all(lldp_switch_t *lldpsw, GHFunc iter_fn, void *arg);
-int lldp_port_add(void *app_arg, lldp_switch_t *sw, struct ofp_phy_port *port_info, 
-                  bool need_lock);
 int lldp_packet_handler(uint64_t receiver_id, uint16_t receiver_port, lldp_pkt_t *pkt);
 void lldp_port_status_handler(void *app_arg, c_ofp_port_status_t *port_stat);
 int mul_lldp_init(tr_struct_t *tr);

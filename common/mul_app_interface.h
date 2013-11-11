@@ -31,14 +31,13 @@ extern initcall_t __start_modvtyinit_sec, __stop_modvtyinit_sec;
 #define module_vty_init(x)  initcall_t _##x vty_attr = x
 #endif
 
-#include "openflow.h"
-
 /* Registered application names */
 #define FAB_APP_NAME "mul-fabric"
 #define CLI_APP_NAME "mul-cli"
 #define L2SW_APP_NAME "mul-l2sw"
 #define TR_APP_NAME "mul-tr"
 #define MAKDI_APP_NAME "mul-makdi"
+#define MUL_MAX_SERVICE_NUM 5
 
 /* Controller app event notifications */
 typedef enum c_app_event {
@@ -69,7 +68,8 @@ typedef enum c_app_event {
 #define C_OFPT_RECONN_APP         (C_OFPT_BASE + 3)
 #define C_OFPT_NOCONN_APP         (C_OFPT_BASE + 4)
 #define C_OFPT_SET_FPOPS          (C_OFPT_BASE + 5)
-#define C_OFPT_AUX_CMD            (C_OFPT_BASE + 6)
+#define C_OFPT_GROUP_MOD          (C_OFPT_BASE + 6)
+#define C_OFPT_AUX_CMD            (C_OFPT_BASE + 7)
 
 struct c_ofp_switch_delete {
     struct ofp_header header;
@@ -79,64 +79,106 @@ struct c_ofp_switch_delete {
 };
 OFP_ASSERT(sizeof(struct c_ofp_switch_delete) == (24));
 
+struct c_sw_port {
+    uint32_t port_no;
+    uint8_t hw_addr[OFP_ETH_ALEN];
+    char name[OFP_MAX_PORT_NAME_LEN]; /* Null-terminated */
+
+    uint8_t pad[6];
+
+#define C_MLPC_DOWN 0x1
+#define C_MLPC_NO_STP 0x2
+    uint32_t config;
+
+#define C_MLPS_DOWN 0x1
+    uint32_t state;
+
+    uint32_t of_config;     /* Openflow port config */
+    uint32_t of_state;      /* Openflow port state */
+
+    uint32_t curr;          /* Current features. */
+    uint32_t advertised;    /* Features being advertised by the port. */
+    uint32_t supported;     /* Features supported by the port. */
+    uint32_t peer;          /* Features advertised by peer. */
+};
+OFP_ASSERT(sizeof(struct c_sw_port) == 64);
+
+/* Switch Add message */
+struct c_ofp_switch_add {
+    struct ofp_header header;
+    uint64_t datapath_id;   /* Datapath unique ID.  The lower 48-bits are for
+                               a MAC address, while the upper 16-bits are
+                               implementer-defined. */
+    uint32_t sw_alias;
+    uint32_t n_buffers;     /* Max packets buffered at once. */
+
+    uint8_t n_tables;       /* Number of tables supported by datapath. */
+    uint8_t ver;            /* Switch's negotiated version */
+    uint8_t pad[6];         /* Align to 64-bits. */
+
+    uint32_t capabilities;  /* Bitmap of support "ofp_capabilities". */
+    uint32_t actions;       /* Deprecated */
+
+    /* Port info.*/
+    struct c_sw_port ports[0];  /* Port definitions.  The number of ports
+                                   is inferred from the length field in
+                                   the header. */
+};
+OFP_ASSERT(sizeof(struct c_ofp_switch_add) == 40);
+
 struct c_ofp_port_status {
     struct ofp_header   header;
     uint64_t            datapath_id;
     uint32_t            sw_alias;
     uint32_t            config_mask;
     uint32_t            state_mask;
-    uint32_t            pad;
-    uint8_t             reason;          /* One of OFPPR_*. */
-    uint8_t             pad1[7];         /* Align to 64-bits. */
-    struct ofp_phy_port desc;
+    uint8_t             reason;  /* One of common across OF versions */
+    uint8_t             pad[7];  /* Align to 64-bits. */
+    struct c_sw_port    desc;
 };
-OFP_ASSERT(sizeof(struct c_ofp_port_status)==sizeof(struct ofp_port_status)+24);
 
 struct flow {
     uint32_t            nw_src;            /* IP source address. */
     uint32_t            nw_dst;            /* IP destination address. */
-    uint16_t            in_port;           /* Input switch port. */
+    uint32_t            in_port;           /* Input switch port. */
     uint16_t            dl_vlan;           /* Input VLAN id. */
     uint16_t            dl_type;           /* Ethernet frame type. */
     uint16_t            tp_src;            /* TCP/UDP source port. */
     uint16_t            tp_dst;            /* TCP/UDP destination port. */
-    uint8_t             dl_dst[6];         /* Ethernet destination address. */
-    uint8_t             dl_src[6];         /* Ethernet source address. */
     uint8_t             dl_vlan_pcp;       /* Input VLAN priority. */
     uint8_t             nw_tos;            /* IPv4 DSCP. */
     uint8_t             nw_proto;          /* IP protocol. */
+    uint8_t             pad0;
+    uint8_t             dl_dst[6];         /* Ethernet destination address. */
+    uint8_t             dl_src[6];         /* Ethernet source address. */
+#define C_FL_TBL_ID_DFL 0
+    uint8_t             table_id;          /* Table-Id in cases necessary */
 #define FL_DFL_GW pad[0]
-    uint8_t             pad[3];
+    uint8_t             pad[11];
 };
-OFP_ASSERT(sizeof(struct flow)==36);
+OFP_ASSERT(sizeof(struct flow)==48);
 
 struct c_ofp_packet_in {
     struct ofp_header header;
     uint64_t          datapath_id;   /* Switch id */  
     uint32_t          sw_alias;      /* Switch Alias id */
-    uint32_t          pad;
-    struct flow       fl;
     uint32_t          buffer_id;     /* ID assigned by datapath. */
+    struct flow       fl;
+    uint32_t          in_port;       /* Port on which frame was received. */
     uint16_t          total_len;     /* Full length of frame. */
-    uint16_t          in_port;       /* Port on which frame was received. */
     uint8_t           reason;        /* Reason packet is being sent (one of OFPR_*) */
-    uint8_t           pad1;
-    uint8_t           data[0];       /* Ethernet frame, halfway through 32-bit word,
-                                        so the IP header is 32-bit aligned.  The
-                                        amount of data is inferred from the length
-                                        field in the header.  Because of padding,
-                                        offsetof(struct ofp_packet_in, data) ==
-                                        sizeof(struct ofp_packet_in) - 2. */
+    uint8_t           pad;
+    uint8_t           data[0];       /* Ethernet frame */
 };
-OFP_ASSERT(sizeof(struct c_ofp_packet_in) == (72));
+OFP_ASSERT(sizeof(struct c_ofp_packet_in) == (80));
 
 
 struct c_ofp_flow_mod {
     struct ofp_header   header;
     uint64_t            datapath_id;
-    uint32_t            sw_alias;
 
     struct flow         flow; 
+    struct flow         mask; 
 #define C_FL_ENT_STATIC     (0x1) 
 #define C_FL_ENT_CLONE      (0x2)
 #define C_FL_ENT_LOCAL      (0x4)
@@ -144,6 +186,7 @@ struct c_ofp_flow_mod {
 #define C_FL_ENT_NOSYNC     (0x10)
 #define C_FL_ENT_GSTATS     (0x20)
 #define C_FL_ENT_SWALIAS    (0x40)
+#define C_FL_ENT_EXPIRED    (0x80)
     uint8_t             flags;
 #define C_OFPC_ADD  0
 #define C_OFPC_DEL  1
@@ -153,23 +196,26 @@ struct c_ofp_flow_mod {
 #define C_FL_PRIO_DRP 2
 #define C_FL_PRIO_EXM 65535
     uint16_t            priority;
+    uint32_t            sw_alias;
     uint32_t            wildcards;
     uint16_t            itimeo;
     uint16_t            htimeo;
-    uint16_t            mod_flags;
-    uint16_t            oport;
+    uint32_t            oport;
     uint32_t            buffer_id;
-	uint32_t			pad;
+    uint32_t            ogroup;
+    uint16_t            mod_flags;
+	uint8_t		    	pad[2];
     struct ofp_action_header actions[0];
 };
-OFP_ASSERT(sizeof(struct c_ofp_flow_mod) == (80));
+OFP_ASSERT(sizeof(struct c_ofp_flow_mod) == (144));
 
 struct c_ofp_flow_info {
     struct ofp_header   header;
     uint64_t            datapath_id;
     uint32_t            sw_alias;
-
+	uint32_t			pad;
     struct flow         flow; 
+    struct flow         mask; 
     uint8_t             flags;
     uint8_t             command;
     uint16_t            priority;
@@ -179,7 +225,7 @@ struct c_ofp_flow_info {
     uint16_t            mod_flags;
     uint16_t            oport;
     uint32_t            buffer_id;
-	uint32_t			pad;
+	uint32_t			pad1;
     uint64_t            byte_count;
     uint64_t            packet_count;
 #define C_FL_XPS_SZ 32
@@ -187,40 +233,63 @@ struct c_ofp_flow_info {
     uint8_t             pps[C_FL_XPS_SZ];
     struct ofp_action_header actions[0];
 };
-OFP_ASSERT(sizeof(struct c_ofp_flow_info) == (160));
+OFP_ASSERT(sizeof(struct c_ofp_flow_info) == (224));
 
 /* Flow removed (datapath -> controller). */
 struct c_ofp_flow_removed {
     struct ofp_header   header;
     uint64_t            datapath_id;
     struct flow         flow;
-    uint32_t            wildcards;      /* Wildcards */
+    struct flow         mask;
     uint64_t            cookie;         /* Opaque controller-issued identifier.*/
-    uint16_t            priority;       /* Priority level of flow entry. */
-    uint8_t             reason;         /* One of OFPRR_*. */             
-    uint8_t             pad[1];         /* Align to 32-bits. */           
     uint32_t            duration_sec;   /* Time flow was alive in seconds. */
     uint32_t            duration_nsec;  /* Time flow was alive in nanosecs beyond
                                            duration_sec. */               
     uint16_t            idle_timeout;   /* Idle timeout from original flow mod.*/
-    uint8_t             pad2[2];        /* Align to 64-bits. */           
+    uint16_t            priority;       /* Priority level of flow entry. */
+    uint8_t             reason;         /* One of OFPRR_*. */             
+ 
+    uint8_t             pad[3];         /* Align to 64-bits. */           
     uint64_t            packet_count;                                      
     uint64_t            byte_count;                                        
 };  
-OFP_ASSERT(sizeof(struct ofp_flow_removed) == 88);
+OFP_ASSERT(sizeof(struct c_ofp_flow_removed) == 152);
+
+struct c_ofp_bkt {
+    uint16_t weight;
+    uint16_t act_len;
+    uint8_t  pad[4];
+    struct ofp_action_header actions[0];
+};
+OFP_ASSERT(sizeof(struct c_ofp_bkt) == 8);
+
+struct c_ofp_group_mod {
+    struct ofp_header   header;
+    uint64_t            datapath_id;
+
+#define C_OFPG_ADD  0
+#define C_OFPG_DEL  1
+    uint8_t             command;
+    uint8_t             type;      /* One of OFPGT_*. */
+    uint8_t             pad[2];
+    uint32_t            group_id;
+    struct c_ofp_bkt    buckets[0];
+};
+OFP_ASSERT(sizeof(struct c_ofp_group_mod) == 24);
 
 struct c_ofp_packet_out {
     struct ofp_header   header;
     uint64_t            datapath_id;
     uint32_t            buffer_id;    
-    uint16_t            in_port;
+    uint32_t            in_port;
     uint16_t            actions_len; 
+    uint8_t             pad[6];
     struct ofp_action_header actions[0]; 
     /* uint8_t data[0]; */        /* Packet data.  The length is inferred
                                      from the length field in the header.
                                      (Only meaningful if buffer_id == -1.) */
 };
-OFP_ASSERT(sizeof(struct c_ofp_packet_out) == 24);
+OFP_ASSERT(sizeof(struct c_ofp_packet_out) == 32);
 
 struct c_ofp_register_app {
     struct ofp_header   header;
@@ -310,10 +379,11 @@ struct c_ofp_switch_neigh {
 OFP_ASSERT(sizeof(struct c_ofp_switch_neigh) == 8);
 
 #define SW_INIT             (0)
-#define SW_REGISTERED       (0x1)
-#define SW_DEAD             (0x2)
-#define SW_REINIT           (0x4)
-#define SW_REINIT_VIRT      (0x8)
+#define SW_OFP_NEGOTIATED   (0x1)
+#define SW_REGISTERED       (0x2)
+#define SW_DEAD             (0x4)
+#define SW_REINIT           (0x8)
+#define SW_REINIT_VIRT      (0x10)
 
 struct c_ofp_switch_brief {
     struct c_ofp_req_dpid_attr switch_id;
@@ -326,17 +396,16 @@ OFP_ASSERT(sizeof(struct c_ofp_switch_brief) == 48);
 
 struct c_ofp_host_mod {
     struct c_ofp_req_dpid_attr switch_id;
-    uint32_t                   pad;
     struct flow                host_flow;
 };
-OFP_ASSERT(sizeof(struct c_ofp_host_mod) == 48);
+OFP_ASSERT(sizeof(struct c_ofp_host_mod) == 56);
 
 struct c_ofp_route {
     struct c_ofp_host_mod      src_host;
     struct c_ofp_host_mod      dst_host;
     uint8_t                    route_links[0];
 };
-OFP_ASSERT(sizeof(struct c_ofp_route) == 96);
+OFP_ASSERT(sizeof(struct c_ofp_route) == 112);
 
 struct c_ofp_route_link {
     uint64_t                   datapath_id;
@@ -365,7 +434,7 @@ struct c_ofp_s_chain_mod {
 #define MAX_NFV_NAME 64
     char                       nfv_list[MAX_NFV][MAX_NFV_NAME];    
 };
-OFP_ASSERT(sizeof(struct c_ofp_s_chain_mod) == 696);
+OFP_ASSERT(sizeof(struct c_ofp_s_chain_mod) == 704);
 
 #define C_OFP_ERR_CODE_BASE (100)
 
@@ -392,10 +461,12 @@ OFP_ASSERT(sizeof(struct c_ofp_s_chain_mod) == 696);
 
 #define C_GET_ALIAS_IN_SWADD(sw_add) (int)ntohs(*((uint16_t *)(sw_add->pad)))
 
+typedef struct c_sw_port c_sw_port_t;
 typedef struct c_ofp_switch_delete c_ofp_switch_delete_t;
-typedef struct ofp_switch_features c_ofp_switch_add_t;
+typedef struct c_ofp_switch_add c_ofp_switch_add_t;
 typedef struct c_ofp_packet_in c_ofp_packet_in_t;;
 typedef struct c_ofp_port_status c_ofp_port_status_t;
+typedef struct c_ofp_phy_port c_ofp_phy_port_t;
 typedef struct c_ofp_flow_mod c_ofp_flow_mod_t;
 typedef struct c_ofp_flow_info c_ofp_flow_info_t;
 typedef struct c_ofp_packet_out c_ofp_packet_out_t; 
@@ -413,38 +484,5 @@ typedef struct c_ofp_route c_ofp_route_t;
 typedef struct c_ofp_route_link c_ofp_route_link_t;
 typedef struct c_ofp_ha_state c_ofp_ha_state_t;
 typedef struct c_ofp_s_chain_mod c_ofp_s_chain_mod_t;
-
-void mul_app_free_buf(void *b);
-int mul_register_app(void *app, char *app_name, uint32_t app_flags,
-                     uint32_t ev_mask, uint32_t n_dpid, uint64_t *dpid_list,
-                     void  (*ev_cb)(void *app_arg, void *pkt_arg));
-int mul_unregister_app(char *app_name);
-int mul_app_command_handler(void *app_name,void *b);
-int mul_app_send_flow_add(void *app_name, void *sw_arg, uint64_t dpid, struct flow *fl,
-                          uint32_t buffer_id, void *actions, size_t action_len,
-                          uint16_t itimeo, uint16_t htimeo, uint32_t wildcards,
-                          uint16_t prio, uint8_t flag);
-int mul_service_send_flow_add(void *service,
-                          uint64_t dpid, struct flow *fl, uint32_t buffer_id,
-                          void *actions, size_t action_len, uint16_t itimeo,
-                          uint16_t htimeo, uint32_t wildcards, uint16_t prio,
-                          uint8_t flags);
-int mul_app_send_flow_del(void *app_name, void *sw_arg, uint64_t dpid,
-                          struct flow *fl, uint32_t wildcards, 
-                          uint16_t port, uint16_t prio, uint8_t flag);
-int mul_service_send_flow_del(void *service,                    
-                      uint64_t dpid, struct flow *fl,
-                      uint32_t wildcards, uint16_t oport,
-                      uint16_t prio, uint8_t flags);
-void mul_app_send_pkt_out(void *sw_arg, uint64_t dpid, void *parms);
-void *mul_app_create_service(char *name,
-                             void (*service_handler)(void *service, 
-                                                     struct cbuf *msg));
-void *mul_app_get_service(char *name, const char *server);
-void *mul_app_get_service_notify(char *name,
-                          void (*conn_update)(void *service,
-                                              unsigned char conn_event),
-                          bool retry_conn, const char *server);
-void mul_app_destroy_service(void *service);
 
 #endif

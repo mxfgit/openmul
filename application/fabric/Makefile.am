@@ -18,6 +18,7 @@ INCLUDES = -I. -I$(top_srcdir)/mul -I$(top_srcdir)/common/ \
 
 DEFS = @DEFS@ -DSYSCONFDIR=\"$(sysconfdir)/\"
 
+mulfab_CFLAGS = -DMUL_APP_V2_MLAPI
 libfab_la_SOURCES = \
             mul_fabric_servlet.c
 
@@ -25,6 +26,7 @@ mulfab_SOURCES = mul_fabric.c mul_fabric_host.c mul_fabric_vty.c  \
                 mul_fabric_route.c mul_fabric_switches.c mul_fabric_pkt.c \
                $(top_srcdir)/common/mul_app_main.c \
                $(top_srcdir)/common/mul_of_msg.c \
+               $(top_srcdir)/common/mul_app_infra.c \
                $(top_srcdir)/common/mul_service.c
 
 LD_FLAGS= @LDFLAGS@ 
@@ -40,9 +42,10 @@ INCLUDES += -I$(LIBEVENT_INCLUDE)
 endif
 
 mulfab_LDADD = $(top_srcdir)/common-libs/3rd-party/derived-lib/.libs/libutil.a  \
-                $(top_srcdir)/common-libs/3rd-party/quagga-lib/.libs/libzebra.a \
-                $(top_srcdir)/common-libs/mul-lib/.libs/libmulutil.a  \
-                $(top_srcdir)/services/loadable/topo_routing/./.libs/libmultr.a -lrt
+               $(top_srcdir)/common-libs/3rd-party/quagga-lib/.libs/libzebra.a \
+               $(top_srcdir)/common-libs/mul-lib/.libs/libmulutil.a  \
+			   $(top_srcdir)/mul/./.libs/libmul.a \
+               $(top_srcdir)/services/loadable/topo_routing/./.libs/libmultr.a -lrt
 
 mulfab_LDFLAGS = $(LD_FLAGS) -lpthread -lglib-2.0 -levent -lcrypt 
 

@@ -160,7 +160,7 @@ c_service_wait_response(mul_service_t *service)
                                    &service->conn,
                                    C_SERV_RCV_BUF_SZ,
                                    (conn_proc_t)(c_service_fetch_response),
-                                   of_get_data_len, c_app_of_hdr_valid,
+                                   of_get_data_len, of_hdr_valid,
                                    sizeof(struct ofp_header));
             if (c_recvd_sock_dead(ret)) {
                 c_log_debug("Service(%s) connection Broken..\n", service->service_name);
@@ -189,7 +189,7 @@ c_service_read(evutil_socket_t fd, short events UNUSED, void *arg)
 
     ret = c_socket_read_nonblock_loop(fd, hdl, &hdl->conn, C_SERV_RCV_BUF_SZ,
                                       (conn_proc_t)(hdl->ev_cb),
-                                       of_get_data_len, c_app_of_hdr_valid,
+                                       of_get_data_len, of_hdr_valid,
                                        sizeof(struct ofp_header));
 
     if (c_recvd_sock_dead(ret)) {

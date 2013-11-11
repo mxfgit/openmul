@@ -18,9 +18,12 @@ INCLUDES = -I. -I$(top_srcdir)/common/ -I$(top_srcdir)/mul/ \
 
 DEFS = @DEFS@ -DSYSCONFDIR=\"$(sysconfdir)/\"
 
+mulcli_CFLAGS = -DMUL_APP_V2_MLAPI
+
 mulcli_SOURCES = mul_cli.c \
                $(top_srcdir)/common/mul_app_main.c \
                $(top_srcdir)/common/mul_of_msg.c \
+               $(top_srcdir)/common/mul_app_infra.c \
                $(top_srcdir)/common/mul_service.c
 
 LD_FLAGS= @LDFLAGS@ 

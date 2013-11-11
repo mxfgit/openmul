@@ -356,18 +356,9 @@ c_socket_read_nonblock_loop(int fd, void *arg, c_conn_t *conn,
         b = conn->cbuf; 
     }
 
-
     while (1) {
         if (!cbuf_tailroom(b)) {
-            struct cbuf *new;
-
-            new = alloc_cbuf(b->len + rcv_buf_sz);
-            if (b->len) {
-                memcpy(new->data, b->data, b->len);
-                cbuf_put(new, b->len);
-            }
-            free_cbuf(b);
-            b = new;
+            b = cbuf_realloc_tailroom(b, rcv_buf_sz, true);
         }
 
         if (conn->conn_type == C_CONN_TYPE_SOCK) {
@@ -389,6 +380,7 @@ c_socket_read_nonblock_loop(int fd, void *arg, c_conn_t *conn,
                b->len >= get_data_len(b->data))  {
 
             if (!validate_hdr(b->data)) {
+                conn->cbuf = b;
                 printf("%s: Corrupted header", FN);
                 return 0; /* Close the socket */
             }
@@ -520,6 +512,20 @@ sched_tx_event:
     return err;
 }
 
+int
+c_socket_drain_nonblock(int fd)
+{
+    int ret = 0;
+    char buf[2048];
+
+    while(1) {
+        ret = recv(fd, buf, sizeof(buf), MSG_DONTWAIT);
+        if (ret <= 0) {
+            break;
+        }
+    } 
+    return ret;
+}
 
 int
 c_socket_write_block_loop(c_conn_t *conn, struct cbuf *buf)
@@ -578,14 +584,7 @@ c_socket_read_chunk_loop(int fd, struct cbuf **orig_b,
 
 read_again:
     if (cbuf_tailroom(b) < rem_rcv_sz) {
-        struct cbuf *new;
-        new = alloc_cbuf(b->len + rem_rcv_sz);
-        if (b->len) {
-            memcpy(new->data, b->data, b->len);
-            cbuf_put(new, b->len);
-        }
-        free_cbuf(b);
-        b = new;
+        b = cbuf_realloc_tailroom(b, rem_rcv_sz, true);
     }
 
     if (conn->conn_type == C_CONN_TYPE_SOCK) {

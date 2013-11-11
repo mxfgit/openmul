@@ -19,6 +19,7 @@
 #include "mul_fabric_common.h"
 
 fab_struct_t *fab_ctx;
+extern struct mul_app_client_cb fab_app_cbs;
 
 static void
 fabric_service_handler(void *fab_service, struct cbuf *b);
@@ -46,14 +47,15 @@ fab_timer_event(evutil_socket_t fd UNUSED, short event UNUSED,
  * Handler for packet receive events 
  */
 static void
-fab_pkt_rcv(void *opq, fab_struct_t *fab_ctx, c_ofp_packet_in_t *pin)
+fab_pkt_rcv(mul_switch_t *sw, struct flow *fl, uint32_t inport,
+            uint32_t buffer_id UNUSED, uint8_t *raw, size_t pkt_len)
 {
-    fab_learn_host(opq, fab_ctx, pin);
+    // fab_learn_host(opq, fab_ctx, pin);
 
-    if (pin->fl.dl_type == htons(ETH_TYPE_ARP)) {
-        return fab_arp_rcv(opq, fab_ctx, pin);
+    if (fl->dl_type == htons(ETH_TYPE_ARP)) {
+        return fab_arp_rcv(NULL, fab_ctx, fl, inport, raw, sw->dpid);
     } else {
-        fab_dhcp_rcv(opq, fab_ctx, pin);
+        fab_dhcp_rcv(NULL, fab_ctx,  fl, inport, raw, pkt_len, sw->dpid);
     }
 }
 
@@ -63,42 +65,94 @@ fab_pkt_rcv(void *opq, fab_struct_t *fab_ctx, c_ofp_packet_in_t *pin)
  * Handler for switch add/join event
  */
 static void
-fab_switch_add_notifier(void *opq, fab_struct_t *fab_ctx,
-                        c_ofp_switch_add_t *ofp_sa)
+fab_switch_add_notifier(mul_switch_t *sw)
 {
-    size_t num_port;
-    int i = 0;
-    struct ofp_phy_port *port;
-    fab_switch_t *fab_sw;
-
-
-    if (fab_switch_add(fab_ctx, ntohll(ofp_sa->datapath_id),
-                       C_GET_ALIAS_IN_SWADD(ofp_sa))) {
+    if (fab_switch_add(fab_ctx, sw->dpid, sw->alias_id)) {
         c_log_err("%s: Failed", FN);
         return;
     }
 
-    fab_sw = fab_switch_get(fab_ctx, ntohll(ofp_sa->datapath_id));
+    fab_add_arp_tap_per_switch(NULL, sw->dpid);
+    fab_add_dhcp_tap_per_switch(NULL, sw->dpid);
+}
+
+/** 
+ * fab_switch_del_notifier -
+ *
+ * Handler for switch delete event
+ */
+static void
+fab_switch_del_notifier(mul_switch_t *sw)
+{
+    fab_switch_del(fab_ctx, sw->dpid);
+    fab_reset_all_routes(fab_ctx);
+}
+
+/**
+ * fab_port_add_cb -
+ *
+ * Application port add callback 
+ */
+static void
+fab_port_add_cb(mul_switch_t *sw,  mul_port_t *port)
+{
+    fab_switch_t *fab_sw;
+
+    fab_sw = fab_switch_get(fab_ctx, sw->dpid);
     if (!fab_sw) {
-        c_log_err("%s: Unexpected error", FN);
+        c_log_err("%s: Unknown switch (0x%llx)", FN, sw->dpid);
         return;
     }
 
-    num_port = ( ntohs((ofp_sa->header).length) -
-                sizeof(c_ofp_switch_add_t) ) / sizeof(struct ofp_phy_port);
+    fab_port_add(fab_ctx, fab_sw, port->port_no, port->config, port->state); 
+    fab_activate_all_hosts_on_switch_port(fab_ctx, sw->dpid, port->port_no);
+    fab_switch_put(fab_sw);
+}
 
-    for (i = 0; i < num_port; i++){
-        port = &((struct ofp_phy_port *) &(ofp_sa[1]))[i];
-        fab_port_add(fab_ctx, fab_sw, ntohs(port->port_no), 
-                     ntohl(port->config), ntohl(port->state));
-        fab_activate_all_hosts_on_switch_port(fab_ctx, ntohll(ofp_sa->datapath_id),
-                                           ntohs(port->port_no));
+ 
+/**
+ * fab_port_del_cb -
+ *
+ * Application port del callback 
+ */
+static void
+fab_port_del_cb(mul_switch_t *sw,  mul_port_t *port)
+{
+    fab_switch_t *fab_sw;
+
+    fab_sw = fab_switch_get(fab_ctx, sw->dpid);
+    if (!fab_sw) {
+        c_log_err("%s: Unknown switch (0x%llx)", FN, sw->dpid);
+        return;
     }
 
+    fab_port_delete(fab_ctx, fab_sw, port->port_no);
+    fab_delete_routes_with_port(fab_ctx, sw->alias_id, port->port_no);
     fab_switch_put(fab_sw);
+}
 
-    fab_add_arp_tap_per_switch(opq, ntohll(ofp_sa->datapath_id));
-    fab_add_dhcp_tap_per_switch(opq, ntohll(ofp_sa->datapath_id));
+
+/**
+ * fab_port_chg -
+ *
+ * Application port change callback 
+ */
+static void
+fab_port_chg(mul_switch_t *sw,  mul_port_t *port, bool adm, bool link)
+{
+    fab_switch_t *fab_sw;
+
+    fab_sw = fab_switch_get(fab_ctx, sw->dpid);
+    if (!fab_sw) {
+        c_log_err("%s: Unknown switch (0x%llx)", FN, sw->dpid);
+        return;
+    }
+
+    fab_port_update(fab_ctx, fab_sw, port->port_no, port->config, port->state);
+    if (adm && link) {
+        fab_ctx->rt_scan_all_pending = true;
+    }
+    fab_switch_put(fab_sw);
 }
 
 
@@ -108,145 +162,53 @@ fab_switch_add_notifier(void *opq, fab_struct_t *fab_ctx,
  * Handler for error notifications from controller/switch 
  */
 static void
-fab_recv_err_msg(fab_struct_t *fab_ctx UNUSED, c_ofp_error_msg_t *cofp_err)
+fab_recv_err_msg(mul_switch_t *sw UNUSED, uint16_t type, uint16_t code,
+                 uint8_t *raw UNUSED, size_t raw_len UNUSED)
 {
-    c_log_err("%s: Controller sent error type %hu code %hu", FN,
-               ntohs(cofp_err->type), ntohs(cofp_err->code));
+    c_log_err("%s: Controller sent error type %hu code %hu",
+              FN, type, code);
 
     /* FIXME : Handle errors */
 }
 
+
 /**
- * fab_port_status_handler -
- *
- * Handler for port status update events
+ * fab_core_closed -
  */
 static void
-fab_port_status_handler(void *opq UNUSED, fab_struct_t *fab_ctx,
-                        c_ofp_port_status_t *port_stat)
+fab_core_closed(void)
 {
-    uint32_t config, state;
-    uint32_t config_mask, state_mask;
-    uint16_t port_no;
-    uint64_t dpid = ntohll(port_stat->datapath_id);
-    int sw_alias = ntohl(port_stat->sw_alias);
-    fab_switch_t *sw;
-
-    port_no = ntohs(port_stat->desc.port_no);
-    if (port_no > OFPP_MAX){
-        /* ignore control ports */
-        return;
-    }
-
-    config = ntohl(port_stat->desc.config);
-    config_mask = ntohl(port_stat->config_mask);
-    state = ntohl(port_stat->desc.state);
-    state_mask = ntohl(port_stat->state_mask);
-
-    c_log_debug("%s: switch 0x%llx Port %hu admin %s link %s\n",
-                FN, (unsigned long long)dpid, port_no,
-                (config & OFPPC_PORT_DOWN)? "down": "up",
-                (state & OFPPS_LINK_DOWN)? "down" : "up");
-
-    sw = fab_switch_get(fab_ctx, dpid);
-    if (!sw) {
-        c_log_err("%s: No such switch", FN);
-        return;
-    }
-
-    switch (port_stat->reason){
-    case OFPPR_ADD:
-        /* We can aggresively timeout the existing routes or recalc routes
-          and compare based on which old and inferior routes can be deleted */
-
-        c_log_debug("%s: switch %llx port %hu ->ADD", 
-                    FN, (unsigned long long)dpid, port_no);
-        fab_port_add(fab_ctx, sw, port_no, config, state);
-        fab_activate_all_hosts_on_switch_port(fab_ctx, dpid, port_no);
-        break;
-    case OFPPR_MODIFY:
-        fab_port_update(fab_ctx, sw, port_no, config, state);
-        if (config_mask & OFPPC_PORT_DOWN || state_mask & OFPPS_LINK_DOWN) {
-            if (!(config & OFPPC_PORT_DOWN) && !(state & OFPPS_LINK_DOWN)) {
-                fab_ctx->rt_scan_all_pending = true;
-            } else {
-                c_log_debug("%s: switch %llx port %hu ->DOWN",
-                            FN, (unsigned long long)dpid, port_no);
-                fab_delete_routes_with_port(fab_ctx, sw_alias, port_no);
-            }
-        }
-        break;
-    case OFPPR_DELETE:
-        c_log_debug("%s: switch 0x%llx port %hu ->DELETE",
-                    FN, (unsigned long long)dpid, port_no);
-        fab_port_delete(fab_ctx, sw, port_no);
-        fab_delete_routes_with_port(fab_ctx, sw_alias, port_no);
-        break;
-    default:
-        c_log_err("%s: unknown reason %d", FN, port_stat->reason);
-        break;
-    }
-
-    fab_switch_put(sw);
+    c_log_info("%s: ", FN);
     return;
 }
 
 /**
- * fab_event_notifier -
- *
- * Main Handler for all network and controller events 
+ * fab_core_reconn -
  */
 static void
-fab_event_notifier(void *opq, void *pkt_arg)
+fab_core_reconn(void)
 {
-    struct cbuf         *b = pkt_arg;
-    struct ofp_header   *hdr;
-
-    if (!b) {
-        c_log_err("%s: Invalid arg", FN);
-        return;
-    }
-
-    hdr = (void *)(b->data);
-
-    switch(hdr->type) {
-    case C_OFPT_SWITCH_ADD:
-        fab_switch_add_notifier(opq, fab_ctx, (void *)hdr);
-        break;
-    case C_OFPT_SWITCH_DELETE:
-        {
-            c_ofp_switch_delete_t *ofp_sd = (void *)(hdr);
-            fab_switch_del(fab_ctx, ntohll(ofp_sd->datapath_id));
-            fab_reset_all_routes(fab_ctx);
-            break;
-        }
-    case C_OFPT_PACKET_IN:
-        {
-            fab_pkt_rcv(opq, fab_ctx, (void *)hdr);
-            break;
-        }
-    case C_OFPT_PORT_STATUS:
-        {
-            fab_port_status_handler(opq, fab_ctx, (void *)hdr);
-            break;
-        }
-    case C_OFPT_RECONN_APP:
-        mul_register_app(NULL, FAB_APP_NAME,
+    c_log_info("%s:Core rejoin  ", FN);
+    mul_register_app_cb(NULL, FAB_APP_NAME,
                      C_APP_ALL_SW, C_APP_ALL_EVENTS,
-                     0, NULL, fab_event_notifier);
-
-        /* FIXME - Get cli config by singalling reconnect */
-        break;
-    case C_OFPT_NOCONN_APP:
-        /* Do nothing */
-        break;
-    case C_OFPT_ERR_MSG:
-        fab_recv_err_msg(fab_ctx, (void *)hdr);    
-        break;
-    default:
-        return;
-    }
+                     0, NULL, &fab_app_cbs);
 }
+
+struct mul_app_client_cb fab_app_cbs = {
+    .switch_priv_alloc = NULL,
+    .switch_priv_free = NULL,
+    .switch_add_cb =  fab_switch_add_notifier,
+    .switch_del_cb = fab_switch_del_notifier,
+    .switch_priv_port_alloc = NULL,
+    .switch_priv_port_free = NULL,
+    .switch_port_add_cb = fab_port_add_cb,
+    .switch_port_del_cb = fab_port_del_cb,
+    .switch_port_chg = fab_port_chg,
+    .switch_packet_in = fab_pkt_rcv,
+    .switch_error = fab_recv_err_msg,
+    .core_conn_closed = fab_core_closed,
+    .core_conn_reconn = fab_core_reconn,
+};
 
 /**
  * fabric_service_error -
@@ -559,9 +521,9 @@ fabric_module_init(void *base_arg)
 
     evtimer_add(fab_ctx->fab_timer_event, &tv);
 
-    mul_register_app(NULL, FAB_APP_NAME, 
+    mul_register_app_cb(NULL, FAB_APP_NAME, 
                      C_APP_ALL_SW, C_APP_ALL_EVENTS,
-                     0, NULL, fab_event_notifier);
+                     0, NULL, &fab_app_cbs);
 
     return;
 }

@@ -35,15 +35,41 @@
 
 #define CLI_UNK_BUFFER_ID (0xffffffff)
 
+struct cli_common_args {
+    bool flow_act;
+};
+
 struct cli_flow_action_parms {
+    struct cli_common_args cmn;    
     uint64_t dpid;
     void *fl;
-#define OF_MAX_ACTION_LEN (4096)
-    uint8_t action_len;
-    void *actions;
-    uint32_t wildcards;
+    void *mask;
+    struct mul_act_mdata *mdata;
     bool drop_pkt;
 };
+
+struct cli_group_mod_parms
+{
+    struct cli_common_args cmn;
+    uint64_t dpid;
+    uint32_t group;
+    uint8_t type;
+    mul_act_mdata_t mdata[OF_MAX_ACT_VECTORS];
+    bool drop_pkt[OF_MAX_ACT_VECTORS];
+    size_t act_vec_len;
+};
+
+#define CLI_ARGS_TO_ACT_MDATA_SW(mdata, args) \
+do { \
+    struct cli_common_args *__cmn = (void *)(args); \
+    if (__cmn->flow_act) { \
+        struct cli_flow_action_parms *fl_parms = args; \
+        (mdata) = fl_parms->mdata; \
+    } else { \
+        struct cli_group_mod_parms *g_parms = args; \
+        (mdata) = &g_parms->mdata[g_parms->act_vec_len-1]; \
+    } \
+} while (0)
 
 /* Main fabric context struct holding all info */
 struct cli_struct {

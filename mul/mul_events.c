@@ -111,7 +111,7 @@ c_per_sw_timer(void *arg_sw, void *arg_time)
         time_diff = time - sw->last_sample_time;
 
         if (time_diff > C_SWITCH_STAT_TIMEO) {
-            of_per_switch_flow_stats_scan(sw, time);
+            c_per_switch_flow_stats_scan(sw, time);
         }
     }
 
@@ -169,7 +169,7 @@ c_worker_ipc_read(evutil_socket_t fd, short event UNUSED, void *arg)
 
     if (c_recvd_sock_dead(ret)) {
         c_log_warn("Thread type %u id %u ipc rd socket:DEAD(%d)", 
-                    cmn_ctx->thread_type, thread_idx, ret);
+                    cmn_ctx->thread_type, thread_idx, (int)ret);
         perror("ipc-socket");
         event_free(C_EVENT(conn->rd_event));
     }
@@ -183,7 +183,7 @@ c_thread_write_event(evutil_socket_t fd UNUSED, short events UNUSED, void *arg)
     c_conn_t *conn = arg;
 
     c_wr_lock(&conn->conn_lock);
-    c_socket_write_nonblock_sg_loop(conn, c_write_event_sched);
+    c_socket_write_nonblock_loop(conn, c_write_event_sched);
     c_wr_unlock(&conn->conn_lock);
 }
 
@@ -192,9 +192,10 @@ c_switch_read_nonblock_loop(int fd, void *arg, c_conn_t *conn,
                             const size_t rcv_buf_sz, 
                             conn_proc_t proc_msg )
 {
-    ssize_t             rd_sz = -1, proc_sz = 0;
-    struct cbuf         curr_b, *b = NULL;
-    int                 loop_cnt = 0;
+    ssize_t rd_sz = -1, proc_sz = 0;
+    size_t curr_buf_sz;
+    struct cbuf curr_b, *b = NULL;
+    int loop_cnt = 0;
 
     if (!conn->cbuf) {
         b = alloc_cbuf(rcv_buf_sz);
@@ -203,7 +204,7 @@ c_switch_read_nonblock_loop(int fd, void *arg, c_conn_t *conn,
     }
 
     while (1) {
-        if (!cbuf_tailroom(b)) {
+        if (cbuf_tailroom(b) < sizeof(struct ofp_header)) {
             b = cbuf_realloc_tailroom(b, rcv_buf_sz, true);
         }
 
@@ -222,16 +223,25 @@ c_switch_read_nonblock_loop(int fd, void *arg, c_conn_t *conn,
 
         cbuf_put_inline(b, rd_sz);
 
-        while (b->len >= sizeof(struct ofp_header) && 
-               b->len >= ntohs(((struct ofp_header *)(b->data))->length))  {
+        while (1) {
+            if (unlikely(b->len < sizeof(struct ofp_header))) {
+                break;
+            }
 
-            if (!of_hdr_valid(b->data)) {
-                c_log_err("%s: Corrupted header", FN);
-                return 0; /* Close the socket */
+            curr_buf_sz = of_get_data_len(CBUF_DATA(b));
+            if (unlikely(!__of_hdr_valid(b->data, curr_buf_sz))) {
+                c_log_err("%s: Corrupted header(Ignored)", FN);
+                if (b) free_cbuf(b);
+                conn->cbuf = NULL;
+                return c_socket_drain_nonblock(fd); /* Hope peer behaves now */
+            }
+
+            if (unlikely(b->len < curr_buf_sz)) {
+                break;
             }
 
             curr_b.data = b->data;
-            curr_b.len = ntohs(((struct ofp_header *)(b->data))->length);
+            curr_b.len = curr_buf_sz;
             curr_b.tail = b->data + curr_b.len;
             proc_sz += curr_b.len;
 
@@ -277,10 +287,9 @@ c_switch_thread_read(evutil_socket_t fd, short events UNUSED, void *arg)
     struct c_worker_ctx *w_ctx = sw->ctx;
 
     ret = c_switch_read_nonblock_loop(fd, sw, &sw->conn, OFC_RCV_BUF_SZ,
-                                      of_switch_recv_msg);
+                                      c_switch_recv_msg);
     if (c_recvd_sock_dead(ret)) {
         perror("c_switch_thread_read");
-        sw->conn.dead = 1;
         c_worker_do_switch_del(w_ctx, sw);
     } 
 
@@ -296,13 +305,12 @@ c_app_thread_read(evutil_socket_t fd, short events UNUSED, void *arg)
 
     ret = c_socket_read_nonblock_loop(fd, app, &app->app_conn, OFC_RCV_BUF_SZ,
                                       (conn_proc_t)__mul_app_command_handler, 
-                                      of_get_data_len, c_app_of_hdr_valid, 
+                                      of_get_data_len, of_hdr_valid, 
                                       sizeof(struct ofp_header));
     if (c_recvd_sock_dead(ret)) {
         c_log_err("%s Application socket dead", 
                   app->app_flags & C_APP_AUX_REMOTE ?"Aux":"");
         perror("app-socket");
-        app->app_conn.dead = 1;
         c_worker_do_app_del(app_ctx, app);
     } 
 
@@ -329,22 +337,21 @@ c_worker_do_switch_zap(struct c_worker_ctx *c_wrk_ctx,
     c_per_thread_dat_t  *t_data = &c_wrk_ctx->thread_data;
 
     t_data->sw_list = g_slist_remove(t_data->sw_list, sw);
-    of_switch_del(sw);
-    of_switch_put(sw);
+    c_switch_del(sw);
+    c_switch_put(sw);
 }
 
 void
 c_worker_do_switch_del(struct c_worker_ctx *c_wrk_ctx, 
                        c_switch_t *sw)
 {
-
     c_conn_destroy(&sw->conn);
 
     if (!c_switch_is_virtual(sw)) {
         c_worker_do_switch_zap(c_wrk_ctx, sw);
     } else {
-        of_switch_mark_sticky_del(sw);
-    } 
+        c_switch_mark_sticky_del(sw);
+    }
 }
 
 static int
@@ -366,8 +373,8 @@ c_worker_do_app_add(void *ctx_arg, void *msg_arg)
         return -1;
     } 
 
-    app->app_conn.fd = msg->new_conn_fd;
     t_data->app_list = g_slist_append(t_data->app_list, app);
+    c_conn_assign_fd(&app->app_conn, msg->new_conn_fd);
 
     if (msg->aux_conn_valid && msg->aux_conn) {
         c_log_debug("%s:new aux app", FN);
@@ -403,7 +410,7 @@ c_worker_do_switch_add(void *ctx_arg, void *msg_arg)
 
     c_log_debug("New switch to thread (%u)\n", (unsigned)c_wrk_ctx->thread_idx);
 
-    new_switch = of_switch_alloc(c_wrk_ctx);
+    new_switch = c_switch_alloc(c_wrk_ctx);
 
     t_data->sw_list = g_slist_append(t_data->sw_list, new_switch);
     new_switch->c_hdl = c_wrk_ctx->cmn_ctx.c_hdl;

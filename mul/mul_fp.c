@@ -22,29 +22,86 @@
 #include "mul.h"
 #include "mul_fp.h"
 
-static int
-c_l2fdb_install(c_switch_t *sw, c_l2fdb_ent_t *ent, bool add)
+struct flow l2_fl_mask;
+
+void
+c_l2fdb_show(c_switch_t *sw, void *arg,
+             void (*show_fn)(void *arg, c_fl_entry_t *ent))
+{
+    unsigned int bkt_idx = 0, ent_idx = 0;
+    c_l2fdb_ent_t  *ent = NULL;
+    c_fl_entry_t fl_ent;
+    uint8_t actions[C_INLINE_ACT_SZ];
+    mul_act_mdata_t mdata;
+     
+    memset(&fl_ent, 0, sizeof(fl_ent));
+    memcpy(&fl_ent.fl_mask, &l2_fl_mask, sizeof(struct flow));
+
+    mdata.act_base = actions;
+    of_mact_mdata_init(&mdata, C_INLINE_ACT_SZ);
+
+    fl_ent.fl.table_id = C_TBL_HW_IDX_DFL;
+    c_rd_lock(&sw->lock);
+    if (sw->app_flow_tbl) {
+        for (bkt_idx = 0; bkt_idx < C_L2FDB_SZ; bkt_idx++) {
+            c_l2fdb_bkt_t  *bkt = sw->app_flow_tbl;
+
+            bkt += bkt_idx;
+            for (; bkt; bkt = bkt->next) {
+                for (ent_idx = 0; 
+                     ent_idx < C_FDB_ENT_PER_BKT;
+                     ent_idx++) {
+
+                    ent = &bkt->fdb_ent[ent_idx];
+                    if (!ent->valid) continue; 
+                    
+                    c_rw_lock_init(&fl_ent.FL_LOCK);
+                    fl_ent.sw = sw;
+                    fl_ent.FL_ENT_TYPE = C_TBL_RULE;
+                    fl_ent.FL_PRIO = C_FL_PRIO_DFL;
+                    memcpy(&fl_ent.fl.dl_dst, ent->mac, OFP_ETH_ALEN);
+                    sw->ofp_ctors->act_output(&mdata, ent->port);
+                    fl_ent.actions = (void *)(mdata.act_base);
+                    fl_ent.action_len = of_mact_len(&mdata);
+                    show_fn(arg, &fl_ent);
+                    of_mact_mdata_reset(&mdata);
+                }
+            }
+        }
+    }
+    c_rd_unlock(&sw->lock);
+}
+
+static inline int
+c_l2fdb_install(c_switch_t *sw, c_l2fdb_ent_t *ent)
 {
     struct flow fl;
-    struct ofp_action_output op_act;
+    uint8_t actions[C_INLINE_ACT_SZ];
+    size_t act_len;
+    mul_act_mdata_t mdata;
+
+    mdata.act_base = actions;
+    of_mact_mdata_init(&mdata, C_INLINE_ACT_SZ);
 
     memcpy(&fl.dl_dst, ent->mac, OFP_ETH_ALEN);
-    
-    if (add) {
-        op_act.type = htons(OFPAT_OUTPUT);
-        op_act.len  = htons(sizeof(op_act));  
-        op_act.port = htons(ent->port);
-        ent->installed = 1;
-        of_send_flow_add_nocache(sw, &fl, (uint32_t)(-1),
-                                 &op_act, sizeof(op_act), 60, 0,
-                                 htonl(OFPFW_ALL & ~(OFPFW_DL_DST)),
-                                 C_FL_PRIO_DFL);
-    } else {
-        ent->installed = 0;
-        of_send_flow_del_nocache(sw, &fl, htonl(OFPFW_ALL & ~(OFPFW_DL_DST)),
-                                 OFPP_NONE, false);
-    }
+    act_len = sw->ofp_ctors->act_output(&mdata, ent->port);
+    ent->installed = 1;
+    of_send_flow_add_direct(sw, &fl, &l2_fl_mask, (uint32_t)(-1),
+                            mdata.act_base, act_len, 60, 0,
+                            C_FL_PRIO_DFL);
+    return 0;
+}
 
+static int
+c_l2fdb_uninstall(c_switch_t *sw, c_l2fdb_ent_t *ent)
+{
+    struct flow fl;
+
+    memcpy(&fl.dl_dst, ent->mac, OFP_ETH_ALEN);
+    ent->installed = 0;
+    of_send_flow_del_direct(sw, &fl, &l2_fl_mask,
+                            OFPP_NONE, false, C_FL_PRIO_DFL,
+                            OFPG_ANY);
     return 0;
 }
 
@@ -54,54 +111,66 @@ c_l2fdb_evict(c_switch_t *sw, uint8_t *mac, uint16_t port,
 {
     if (ent) {
         if (ent->installed) {
-            c_l2fdb_install(sw, ent, false);
+            c_l2fdb_uninstall(sw, ent);
         }
         c_l2fdb_ent_init(ent, mac, port);
     }
 }
 
 static int __fastpath
-c_l2fdb_learn(c_switch_t *sw, uint8_t *mac, uint16_t port)
+c_l2fdb_learn(c_switch_t *sw, uint8_t *mac, uint32_t port)
 {
     c_l2fdb_bkt_t  *bkt = sw->app_flow_tbl;
+    c_l2fdb_bkt_t  *last_bkt = NULL, *new_bkt = NULL;
     unsigned int   bkt_idx = c_l2fdb_key(mac);
-    unsigned int   idx = 0;
+    unsigned int   idx;
     c_l2fdb_ent_t  *ent, *emp_ent = NULL;
     c_l2fdb_ent_t  *evict_ent = NULL;
     
     bkt += bkt_idx;
 
-    while(idx < C_FDB_ENT_PER_BKT) {
-        ent = &bkt->fdb_ent[idx++];
+    for (; bkt; bkt = bkt->next) {
+        idx = 0;
+        while(idx < C_FDB_ENT_PER_BKT) {
+            ent = &bkt->fdb_ent[idx++];
 
-        if (!ent->valid) {
-            if (!emp_ent)
-                emp_ent = ent;
-            continue;
-        } 
+            if (likely(!ent->valid)) {
+                if (!emp_ent)
+                    emp_ent = ent;
+                continue;
+            } 
 
-        if (c_l2fdb_equal(mac, ent->mac)) {
-            if (ent->port != port) {
-                ent->port = port;
-                c_l2fdb_install(sw, ent, true);
-            }    
-            return 0;
+            if (c_l2fdb_equal(mac, ent->mac)) {
+                if (ent->port != port) {
+                    ent->port = port;
+                    c_l2fdb_install(sw, ent);
+                }    
+                return 0;
+            }
+            /* Minimal eviction alg. Need more work */
+            if (!evict_ent) {
+                time_t curr_time = time(NULL);
+                if (curr_time > ent->timestamp + 25) 
+                    evict_ent = ent; 
+            }
         }
+        last_bkt = bkt;
+    }
 
-        /* Minimal eviction alg. Need more work */
-        if (!evict_ent || evict_ent->timestamp > ent->timestamp) {
-           evict_ent = ent; 
-        }
-    } 
-
+add_entry:
     if (emp_ent)  {
         c_l2fdb_ent_init(emp_ent, mac, port);
         return 0;
     } 
 
-    /* FIXME : Add chaining */
-    c_log_err("%s: Cant add entry. Trying to evict", FN);
-    c_l2fdb_evict(sw, mac, port, evict_ent);
+    if (!evict_ent) {
+        new_bkt = calloc(1, sizeof(*new_bkt));
+        last_bkt->next = new_bkt;
+        emp_ent = &new_bkt->fdb_ent[0];
+        goto add_entry;
+    } else {
+        c_l2fdb_evict(sw, mac, port, evict_ent);
+    }
 
     return 0;
 }
@@ -116,11 +185,14 @@ c_l2fdb_lookup(c_switch_t *sw, uint8_t *mac)
 
     bkt += bkt_idx;
 
-    while(idx < C_FDB_ENT_PER_BKT) {
-        ent = &bkt->fdb_ent[idx++];
-        if (ent->valid && c_l2fdb_equal(mac, ent->mac)) {
-            return ent;
-        } 
+    for (; bkt; bkt = bkt->next) {
+        idx = 0;
+        while(idx < C_FDB_ENT_PER_BKT) {
+            ent = &bkt->fdb_ent[idx++];
+            if (ent->valid && c_l2fdb_equal(mac, ent->mac)) {
+                return ent;
+            } 
+        }
     }
 
     return NULL;
@@ -129,6 +201,8 @@ c_l2fdb_lookup(c_switch_t *sw, uint8_t *mac)
 int 
 c_l2fdb_init(c_switch_t *sw)
 {
+    memset(&l2_fl_mask, 0, sizeof(l2_fl_mask));
+    memset(l2_fl_mask.dl_dst, 0xff, 6);
     sw->app_flow_tbl = calloc(1, sizeof(struct c_l2fdb_bkt) * C_L2FDB_SZ);
     assert(sw->app_flow_tbl);
 
@@ -138,9 +212,24 @@ c_l2fdb_init(c_switch_t *sw)
 void
 c_l2fdb_destroy(c_switch_t *sw)
 {
+    unsigned int   idx = 0;
+
     c_wr_lock(&sw->lock);
 
-    if (sw->app_flow_tbl) free(sw->app_flow_tbl);
+    if (sw->app_flow_tbl) {
+        for (idx = 0; idx < C_L2FDB_SZ; idx++) {
+            c_l2fdb_bkt_t  *bkt = sw->app_flow_tbl, *prev = NULL;
+
+            bkt += idx;
+            bkt = bkt->next;
+            while (bkt) {
+                prev = bkt;
+                bkt = bkt->next;
+                free(prev);
+            }
+        }
+        free(sw->app_flow_tbl);
+    }
     sw->app_flow_tbl = NULL;
 
     c_wr_unlock(&sw->lock);
@@ -156,12 +245,17 @@ c_l2fdb_destroy(c_switch_t *sw)
  */
 int __fastpath
 c_l2_lrn_fwd(c_switch_t *sw, struct cbuf *b UNUSED, void *data, size_t pkt_len, 
-             struct flow *in_flow, uint16_t in_port)
+             struct c_pkt_in_mdata *pkt_mdata, uint32_t in_port)
 {
-    struct ofp_packet_in *opi __aligned = (void *)(b->data);
-    struct of_pkt_out_params parms;
-    struct ofp_action_output op_act;
     c_l2fdb_ent_t *ent;
+    uint8_t actions[24];
+    size_t act_len;
+    struct of_pkt_out_params parms;
+    struct flow *in_flow = pkt_mdata->fl;
+    mul_act_mdata_t mdata;
+
+    mdata.act_base = actions;
+    of_mact_mdata_init(&mdata, sizeof(actions));
 
     /* We preinstall rules to drop these */
 #ifdef L2_INVALID_ADDR_CHK 
@@ -174,36 +268,35 @@ c_l2_lrn_fwd(c_switch_t *sw, struct cbuf *b UNUSED, void *data, size_t pkt_len,
     }
 #endif
 
-    op_act.type = htons(OFPAT_OUTPUT);
-    op_act.len  = htons(sizeof(op_act));
-    op_act.port = htons(OFPP_ALL);
-
     c_wr_lock(&sw->lock);
-    c_l2fdb_learn(sw, in_flow->dl_src, in_port);
 
+    c_l2fdb_learn(sw, in_flow->dl_src, in_port);
     if ((ent = c_l2fdb_lookup(sw, in_flow->dl_dst))) {
-        op_act.port = htons(ent->port);
+        sw->ofp_ctors->act_output(&mdata, ent->port);
         ent->installed = 1;
-        of_send_flow_add_nocache(sw, in_flow, ntohl(opi->buffer_id),
-                                 &op_act, sizeof(op_act), 60, 0, 
-                                 htonl(OFPFW_ALL & ~(OFPFW_DL_DST)), 
-                                 C_FL_PRIO_DFL);
-        if (opi->buffer_id != (uint32_t)(-1)) {
+        of_send_flow_add_direct(sw, in_flow, &l2_fl_mask,
+                                pkt_mdata->buffer_id,
+                                actions, of_mact_len(&mdata),
+                                10, 20, 
+                                C_FL_PRIO_DFL);
+        if (pkt_mdata->buffer_id != (uint32_t)(-1)) {
             c_wr_unlock(&sw->lock);
             return 0;    
         }
     }
-
     c_wr_unlock(&sw->lock);
 
-    parms.buffer_id = ntohl(opi->buffer_id);
-    parms.action_len = sizeof(op_act);
-    parms.action_list  = &op_act;
+    of_mact_mdata_reset(&mdata);
+    mdata.only_acts = true;
+    act_len = sw->ofp_ctors->act_output(&mdata, OF_ALL_PORTS); 
+    parms.buffer_id = pkt_mdata->buffer_id;
+    parms.action_len = act_len;
+    parms.action_list  = mdata.act_base;
     parms.in_port = in_port;
     parms.data = data;
-    parms.data_len = parms.buffer_id == (uint32_t)(-1)? 0 : pkt_len;
+    parms.data_len = (parms.buffer_id == (uint32_t)(-1))? pkt_len : 0;
 
-    of_send_pkt_out_inline(sw, &parms);
+    sw->ofp_ctors->pkt_out_fast(sw, &parms);
 
     return 0;
 }

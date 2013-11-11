@@ -22,11 +22,8 @@ libmul_la_SOURCES = \
             mul_servlet.c
 
 mul_SOURCES = mul_app_interface.c mul_fp.c mul_main.c mul_thread_core.c \
-              mul_events.c mul_ipc.c mul_of.c mul_vty.c ../common/mul_of_msg.c
-
-if HAVE_L2SW_MODULE 
-mul_SOURCES += $(top_srcdir)/application/l2switch/l2switch.c 
-endif
+              mul_events.c mul_ipc.c mul_of.c mul_vty.c \
+              ../common/mul_of_msg.c ../common/mul_service.c
 
 LD_FLAGS= @LDFLAGS@ 
 

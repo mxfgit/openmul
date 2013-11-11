@@ -38,24 +38,25 @@ void
 fab_add_dhcp_tap_per_switch(void *opq, uint64_t dpid)
 {
     struct flow fl;
-    uint32_t wildcards = OFPFW_ALL;
+    struct flow mask;
+
+    of_mask_set_dc_all(&mask);
 
     /* Add Flow to receive DHCP Packet type */
     memset(&fl, 0, sizeof(fl));
-    wildcards &= ~(OFPFW_DL_TYPE);
-    fl.dl_type = htons(ETH_TYPE_IP);
+    of_mask_set_dl_type(&mask);
 
     memset(fl.dl_dst, 0xff, ETH_ADDR_LEN);
-    wildcards &= ~(OFPFW_DL_DST);
+    of_mask_set_dl_dst(&mask);
 
     fl.nw_dst = 0xffffffff;
-    wildcards &= ~(OFPFW_NW_DST_MASK);
+    of_mask_set_nw_dst(&mask, 32);
 
     fl.nw_proto = 0x11;
-    wildcards &= ~(OFPFW_NW_PROTO);
+    of_mask_set_nw_proto(&mask);
 
-    mul_app_send_flow_add(FAB_APP_NAME, opq, dpid, &fl, (uint32_t)-1,
-                          NULL, 0, 0, 0, wildcards, C_FL_PRIO_DFL,
+    mul_app_send_flow_add(FAB_APP_NAME, opq, dpid, &fl, &mask,
+                          (uint32_t)-1, NULL, 0, 0, 0, C_FL_PRIO_DFL,
                           C_FL_ENT_LOCAL);
 }
 
@@ -72,13 +73,13 @@ fab_dhcp_relay_end_host(void *h_arg, void *v_arg UNUSED, void *parms_arg)
     struct fab_pkt_out_params *f_parms = parms_arg;
     struct of_pkt_out_params  *parms = &f_parms->of_parms;
     struct ofp_action_output  *op_act = parms->action_list; 
-    uint16_t                  in_port = parms->in_port;
+    uint32_t                  in_port = parms->in_port;
 
     if (host->sw.port == in_port && host->sw.swid == f_parms->dpid) {
         return;
     }
 
-    parms->in_port = ntohs(OFPP_NONE);
+    parms->in_port = ntohl(OF_NO_PORT);
     op_act->port = htons(host->sw.port);
     mul_app_send_pkt_out(NULL, host->sw.swid, parms);
     parms->in_port = in_port;
@@ -91,45 +92,43 @@ fab_dhcp_relay_end_host(void *h_arg, void *v_arg UNUSED, void *parms_arg)
  * dhcp relay style processing 
  */
 void
-fab_dhcp_rcv(void *opq UNUSED, fab_struct_t *fab_ctx UNUSED, c_ofp_packet_in_t *pin)
+fab_dhcp_rcv(void *opq UNUSED, fab_struct_t *fab_ctx UNUSED, struct flow *fl,
+             uint32_t in_port, uint8_t *raw, size_t pkt_len, uint64_t dpid)
 {
     struct fab_pkt_out_params f_parms;
     struct of_pkt_out_params  *parms;
-    struct ofp_action_output  op_act;
-    uint32_t                  oport = OFPP_NONE;
-    size_t                    pkt_len, pkt_ofs;
+    struct mul_act_mdata      mdata;
+    uint32_t                  oport = OF_NO_PORT;
 
-    c_log_debug("%s: dhcp from 0x%llx port %hu", FN,
-                (unsigned long long)ntohll(pin->datapath_id),
-                ntohs(pin->in_port)); 
+    c_log_debug("%s: dhcp from 0x%llx port %u", FN,
+                (unsigned long long)dpid, in_port);
     
     memset(&f_parms, 0, sizeof(f_parms));
     parms = &f_parms.of_parms;
 
-    if (pin->fl.dl_type != htons(ETH_TYPE_IP) ||
-        memcmp(pin->fl.dl_dst, fab_bcast_mac, ETH_ADDR_LEN) ||
-        pin->fl.nw_dst != 0xffffffff || pin->fl.nw_proto != 0x11 ||
-        (pin->fl.tp_dst == pin->fl.tp_src) || 
-        (pin->fl.tp_dst != htons(0x43) && pin->fl.tp_dst != htons(0x44)) || 
-        (pin->fl.tp_src != htons(0x43) && pin->fl.tp_src != htons(0x44)))  {
+    if (fl->dl_type != htons(ETH_TYPE_IP) ||
+        memcmp(fl->dl_dst, fab_bcast_mac, ETH_ADDR_LEN) ||
+        fl->nw_dst != 0xffffffff || fl->nw_proto != 0x11 ||
+        (fl->tp_dst == fl->tp_src) || 
+        (fl->tp_dst != htons(0x43) && fl->tp_dst != htons(0x44)) || 
+        (fl->tp_src != htons(0x43) && fl->tp_src != htons(0x44)))  {
 
         return;
     }
 
-    pkt_ofs = offsetof(struct c_ofp_packet_in, data);
-    pkt_len = ntohs(pin->header.length) - pkt_ofs;
-
+    mul_app_act_alloc(&mdata);
+    mul_app_act_set_ctors(&mdata, dpid);
+    mul_app_action_output(&mdata, oport);
     parms->buffer_id = FAB_UNK_BUFFER_ID;
-    parms->in_port = ntohs(pin->in_port);
-    parms->action_list = &op_act;
-    of_make_action_output((char **)&parms->action_list,
-                          sizeof(op_act), oport);
-    parms->action_len = sizeof(op_act);
+    parms->in_port = in_port;
+    parms->action_list = mdata.act_base;
+    parms->action_len = mul_app_act_len(&mdata);
     parms->data_len = pkt_len;
-    parms->data = pin->data;
-    f_parms.dpid = ntohll(pin->datapath_id);
+    parms->data = raw;
+    f_parms.dpid = dpid;
 
     fab_loop_all_hosts(fab_ctx, fab_dhcp_relay_end_host, &f_parms);
+    mul_app_act_free(&mdata);
 
     return;
 }
@@ -175,44 +174,48 @@ void
 fab_add_arp_tap_per_switch(void *opq, uint64_t dpid)
 {
     struct flow fl;
-    uint32_t wildcards = OFPFW_ALL;
+    struct flow mask;
+
+    of_mask_set_dc_all(&mask);
 
     /* Add Flow to receive ARP Packet type */
     memset(&fl, 0, sizeof(fl));
-    wildcards &= ~(OFPFW_DL_TYPE);
-    fl.dl_type = htons(ETH_TYPE_ARP);
 
-    mul_app_send_flow_add(FAB_APP_NAME, opq, dpid, &fl, (uint32_t)-1,
-                          NULL, 0, 0, 0, wildcards, C_FL_PRIO_DFL,
+    fl.dl_type = htons(ETH_TYPE_ARP);
+    of_mask_set_dl_type(&mask);
+
+    mul_app_send_flow_add(FAB_APP_NAME, opq, dpid, &fl, &mask,
+                          (uint32_t)-1, NULL, 0, 0, 0, C_FL_PRIO_DFL,
                           C_FL_ENT_LOCAL);
 }
 
 
 void
-fab_arp_rcv(void *opq, fab_struct_t *fab_ctx UNUSED, c_ofp_packet_in_t *pin)
+fab_arp_rcv(void *opq, fab_struct_t *fab_ctx UNUSED,
+            struct flow *fl, uint32_t in_port,
+            uint8_t *raw, uint64_t datapath_id)
 {
     struct arp_eth_header     *arp;
     struct of_pkt_out_params  parms;
-    struct ofp_action_output  op_act;
+    struct mul_act_mdata      mdata;
 
-    if (pin->fl.dl_type != htons(ETH_TYPE_ARP)) {
+    if (fl->dl_type != htons(ETH_TYPE_ARP)) {
         return;
     }
 
     /* Controller does all packet length and other validations
      * so we can ignore doing those
      */
-    arp = (void *)(pin->data + sizeof(struct eth_header)  +
-                   (pin->fl.dl_vlan ? VLAN_HEADER_LEN : 0));
+    arp = (void *)(raw + sizeof(struct eth_header)); 
 
     /* Here we don't care  to learn a host from gratutious arp
      * as we will learn the host before arp_rcv()
      */
     if (arp->ar_pro != htons(ARP_PRO_IP) || 
         arp->ar_pln != IP_ADDR_LEN ||
-        arp->ar_op != htons(ARP_OP_REQUEST) ||
+        arp->ar_op != htons(ARP_OP_REQUEST ||
         (arp->ar_spa == arp->ar_tpa &&
-        eth_addr_is_zero(arp->ar_tha))) {
+        eth_addr_is_zero(arp->ar_tha)))) {
         return;
     }
 
@@ -220,15 +223,18 @@ fab_arp_rcv(void *opq, fab_struct_t *fab_ctx UNUSED, c_ofp_packet_in_t *pin)
 
     memset(&parms, 0, sizeof(parms));
 
+    mul_app_act_alloc(&mdata);
+    mdata.only_acts = true;
+    mul_app_act_set_ctors(&mdata, datapath_id);
+    mul_app_action_output(&mdata, in_port);
     parms.buffer_id = FAB_UNK_BUFFER_ID;
-    parms.in_port = OFPP_NONE;
-    parms.action_list = &op_act;
-    of_make_action_output((char **)&parms.action_list, sizeof(op_act),
-                           ntohs(pin->in_port));
-    parms.action_len = sizeof(op_act);
+    parms.in_port = OF_NO_PORT;
+    parms.action_list = mdata.act_base;
+    parms.action_len = mul_app_act_len(&mdata);
     parms.data_len = sizeof(struct eth_header) + sizeof(struct arp_eth_header);
     parms.data = fab_mk_proxy_arp_reply(arp);
-    mul_app_send_pkt_out(opq, ntohll(pin->datapath_id), &parms);
+    mul_app_send_pkt_out(NULL, datapath_id, &parms);
+    mul_app_act_free(&mdata);
 
     return;
 }
@@ -241,8 +247,8 @@ fab_add_arp_tap_per_switch(void *opq UNUSED, uint64_t dpid UNUSED)
 }
 
 void
-fab_arp_rcv(void *opq UNUSED, fab_struct_t *fab_ctx UNUSED, c_ofp_packet_in_t *pin UNUSED)
+fab_arp_rcv(void *opq, fab_struct_t *fab_ctx UNUSED,
+            struct flow *fl, uint16_t in_port, uint8_t *raw)
 {
 }
-
 #endif

@@ -614,3 +614,36 @@ mul_route_get(void *rt_service, int src_sw, int dest_sw)
 
     return mul_route_apsp_get_sp(rt_service, src_sw, dest_sw);
 }
+
+/**
+ * mul_route_get_mp -
+ * @rt_service : Handle to the route service 
+ * @src_sw : Source node  
+ * @dest_sw : Destination node 
+ * @u_arg : User argument to be passed to mp_select  
+ * @mp_select : Callback for multi-pathing selection
+ *
+ * Front-end api of routing service to get route from source to dest 
+ * Applicable when users want multi-pathing support
+ */
+GSList *
+mul_route_get_mp(void *rt_service, int src_sw, int dest_sw,  void *u_arg,
+                 size_t (*mp_select)(void *u_arg, size_t max_routes))
+{
+    rt_apsp_t *rt_apsp_info = rt_service;
+
+    if (!mul_route_service_alive(rt_service)) {
+        return 0;
+    }
+
+    if (src_sw < 0 || dest_sw < 0 ||
+        ((src_sw != dest_sw) && (src_sw >= rt_apsp_info->state_info->nodes ||
+        dest_sw >= rt_apsp_info->state_info->nodes))) {
+        c_log_err("%s: src(%d) or dst(%d) out of range(%d)",
+                  FN, src_sw, dest_sw, rt_apsp_info->state_info->nodes);
+        return NULL;
+    }
+
+    return mul_route_apsp_get_mp_sp(rt_service, src_sw, dest_sw,
+                                    u_arg, mp_select);
+}

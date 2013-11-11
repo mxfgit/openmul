@@ -35,6 +35,7 @@
 #include <netinet/in.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <pthread.h>
 
 #include "clog.h"
 
@@ -46,6 +47,8 @@ static inline void ignore_result_helper(int __attribute__((unused)) dummy, ...)
 
 
 static int logfile_fd = -1;	/* Used in signal handler. */
+
+pthread_rwlock_t clog_lock;
 
 struct clog *clog_default = NULL;
 
@@ -202,6 +205,9 @@ vclog (struct clog *zl, int priority, const char *format, va_list args)
       /* In this case we return at here. */
       return;
     }
+
+  pthread_rwlock_wrlock(&clog_lock);
+
   tsctl.precision = zl->timestamp_precision;
 
   /* Syslog output */
@@ -243,6 +249,7 @@ vclog (struct clog *zl, int priority, const char *format, va_list args)
       fflush (stdout);
     }
 
+  pthread_rwlock_unlock(&clog_lock);
   /* Terminal monitor. */
 //  if (priority <= zl->maxlvl[CLOG_DEST_MONITOR])
 //    vty_log ((zl->record_priority ? clog_priority[priority] : NULL),
@@ -653,6 +660,8 @@ openclog (const char *progname, clog_proto_t protocol,
   zl->default_lvl = LOG_DEBUG;
 
   openlog (progname, syslog_flags, zl->facility);
+
+  pthread_rwlock_init(&clog_lock, NULL);
   
   return zl;
 }

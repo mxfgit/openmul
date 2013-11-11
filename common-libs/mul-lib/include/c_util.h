@@ -38,6 +38,15 @@
 
 #define C_MAX_TX_RETRIES   (4)
 
+#define C_ALIGN_8B_LEN(len) (((len) + 7) & ~7)
+
+#define C_SET_BMASK(var, len, pos, mask) ((var&~(((1<<len)-1)<<pos))|(mask&((1<<len)-1)<<pos))
+
+#define SET_BIT_IN_32MASK(mask, bit) \
+do { \
+    *((uint32_t *)(mask) + ((bit)/32)) |= (1 << ((bit)%32)); \
+} while(0)
+
 typedef struct c_conn_
 {
     void                    *rd_event;
@@ -85,6 +94,7 @@ int     c_socket_write_nonblock_loop(c_conn_t *conn,
                                      void (*sched_tx)(void *));
 int     c_socket_write_nonblock_sg_loop(c_conn_t *conn, 
                                      void (*sched_tx)(void *));
+int     c_socket_drain_nonblock(int fd);
 int     c_socket_read_block_loop(int fd, void *arg, c_conn_t *conn,
                                 const size_t max_rcv_buf_sz,
                                 conn_proc_t proc_msg, int (*get_data_len)(void *),
@@ -92,7 +102,6 @@ int     c_socket_read_block_loop(int fd, void *arg, c_conn_t *conn,
 int     c_socket_write_block_loop(c_conn_t *conn, struct cbuf *buf);
 void    c_conn_tx(void *conn_arg, struct cbuf *b, void (*delay_tx)(void *arg));
 size_t  c_count_one_bits(uint32_t num);
-
 
 static inline int
 c_recvd_sock_dead(int recv_res) 
@@ -103,6 +112,54 @@ c_recvd_sock_dead(int recv_res)
     }
 
     return 0;
+}
+
+static inline void
+c_conn_mark_dead(c_conn_t *conn)
+{
+    conn->dead = 1;
+}
+
+static inline void
+c_conn_mark_alive(c_conn_t *conn)
+{
+    conn->dead = 0;
+}
+
+static inline void
+c_conn_close(c_conn_t *conn)
+{
+    if (conn->fd > 0) {
+        shutdown(conn->fd, SHUT_WR);
+        close(conn->fd);
+    }
+    conn->fd = 0;
+    c_conn_mark_dead(conn);
+}
+
+static inline void
+__c_conn_clear_buffers(c_conn_t *conn, bool locked)
+{
+    if (conn->cbuf) {
+        free_cbuf(conn->cbuf);
+        conn->cbuf = NULL;
+    }
+    if (!locked) c_wr_lock(&conn->conn_lock);
+    cbuf_list_purge(&conn->tx_q);
+    if (!locked) c_wr_unlock(&conn->conn_lock);
+}
+
+static inline void
+c_conn_clear_buffers(c_conn_t *conn)
+{
+    return __c_conn_clear_buffers(conn, false);
+} 
+
+static inline void
+c_conn_prep(c_conn_t *conn)
+{
+    c_conn_mark_alive(conn);
+    c_conn_clear_buffers(conn);
 }
 
 static inline void 
@@ -121,14 +178,28 @@ c_timeval_diff(struct timeval *res,
     return;
 }
 
+static inline bool
+c_timeval_a_more_b(struct timeval *a, struct timeval *b)
+{
+    long long diff = (long long)(a->tv_sec) - (long long)(b->tv_sec);
+    if (diff > 0) {
+        return true;
+    } else if (diff < 0) {
+        return false;
+    } else {
+        if ((long long)(a->tv_usec) > (long long)(b->tv_usec)) {
+            return true;
+        }
+        return false;
+    }
+    return false;
+}
 
 static inline uint32_t
 make_inet_mask(uint8_t len)
 {
     return (~((1 << (32 - (len))) - 1));
 }
-
-
 
 #define TIME_uS_SCALE (1000000)
 #define TIME_uS(x) (x*TIME_uS_SCALE)
@@ -138,5 +209,11 @@ make_inet_mask(uint8_t len)
         ((str *) ((char *) (ptr) - offsetof(str, memb)))
 
 #define FN  __FUNCTION__
+
+#define U642ULL(x) ((unsigned long long)(x))
+#define U322UL(x) ((unsigned long)(x))
+#define INC_PTR8(x, len) ((void *)(((uint8_t *)(x)) + (len)))
+#define ASSIGN_PTR(x) ((void *)(x))
+#define DIFF_PTR8(x, y) (((uint8_t *)(x)) - ((uint8_t *)(y)))
 
 #endif

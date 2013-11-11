@@ -17,6 +17,8 @@ INCLUDES = -I. -I$(top_srcdir)/mul -I$(top_srcdir)/common/ \
 
 DEFS = @DEFS@ -DSYSCONFDIR=\"$(sysconfdir)/\"
 
+multr_CFLAGS = -DMUL_APP_V2_MLAPI
+
 libmultr_la_SOURCES = \
         mul_route_servlet.c mul_tr_servlet.c
     
@@ -27,6 +29,7 @@ multr_SOURCES = mul_lldp.c mul_lldp_vty.c mul_lldp_hash.c \
                 mul_tr.c \
                $(top_srcdir)/common/mul_app_main.c \
                $(top_srcdir)/common/mul_of_msg.c \
+               $(top_srcdir)/common/mul_app_infra.c \
                $(top_srcdir)/common/mul_service.c
 
 LD_FLAGS= @LDFLAGS@ 
@@ -43,7 +46,7 @@ endif
 
 multr_LDADD = $(top_srcdir)/common-libs/3rd-party/derived-lib/.libs/libutil.a  \
                 $(top_srcdir)/common-libs/3rd-party/quagga-lib/.libs/libzebra.a \
-                $(top_srcdir)/common-libs/mul-lib/.libs/libmulutil.a 
+                $(top_srcdir)/common-libs/mul-lib/.libs/libmulutil.a
 
 multr_LDFLAGS = $(LD_FLAGS) -lpthread -lglib-2.0 -levent -lcrypt -lmultr -lrt
 
