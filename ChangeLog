@@ -1,4 +1,22 @@
 -------------------------
+ mul 3.0.1-beta
+-------------------------
+
+- Support for Openflow 1.3.1 
+  * Wire protocol implementation
+  * Multiple Group support
+  * Multiple Table support
+- Backward compatibility with Openflow 1.0 (supports both openflow versions)
+- Many security and stability fixes in infrastructure
+- Improved documentation
+
+--------------------------
+ mul 2.8.30 release notes
+--------------------------
+This release contains many bug fixes and performance improvements in various components.
+
+
+-------------------------
  mul 2.0 release notes 
 -------------------------
 
