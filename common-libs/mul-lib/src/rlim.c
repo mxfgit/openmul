@@ -79,6 +79,7 @@ c_rlim(struct c_rlim_dat *rs)
         rs->skip++;
         do_limit = true;
     }
+    c_wr_unlock(&rs->lock);
  
     return do_limit;
 }

@@ -75,8 +75,8 @@ static struct c_ofp_ctors of10_ctors = {
 
 static struct c_ofp_ctors of131_ctors = {
     .hello = of131_prep_hello_msg, 
-    .echo_req = of_prep_echo,
-    .echo_rsp = of_prep_echo_reply,
+    .echo_req = of131_prep_echo_msg,
+    .echo_rsp = of131_prep_echo_reply_msg,
     .set_config = of131_prep_set_config_msg,
     .features = of131_prep_features_request_msg,
     .pkt_out = of131_prep_pkt_out_msg,
