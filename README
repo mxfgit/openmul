@@ -17,6 +17,8 @@
        Not verified with recent ubuntu versions but should work fine.
 
       For CentOS 6 and above, the following packages should be installed :
+      (Please replace 64-bit packages with corresponding 32-bit ones if 
+       underlying platfrom is 32-bit(
 
       > yum install flex bison gettext wxGTK-devel.x86_64 wxGTK.x86_64 make
         autoconf automake expect libstdc++-devel.x86_64 libstdc++.x86_64
