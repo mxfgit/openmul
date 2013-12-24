@@ -272,8 +272,8 @@ l2_fwd:
     mdata.only_acts = true;
     mul_app_act_set_ctors(&mdata, l2sw->swid);
     mul_app_action_output(&mdata, oport);
-    parms.buffer_id = ntohl(buffer_id);
-    parms.in_port = ntohl(inport);
+    parms.buffer_id = buffer_id;
+    parms.in_port = inport;
     parms.action_list = mdata.act_base;
     parms.action_len = mul_app_act_len(&mdata);
     parms.data_len = pkt_len;
