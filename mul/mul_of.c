@@ -1802,13 +1802,14 @@ c_switch_group_del(c_switch_t *sw, struct of_group_mod_params *gp_parms)
 }
 
 static inline void
-of_prep_msg_on_stack(struct cbuf *b, size_t len, uint8_t type, uint32_t xid)
+of_prep_msg_on_stack(struct cbuf *b, size_t len, uint8_t type, uint32_t xid,
+                     uint8_t version)
 {
     struct ofp_header *h;
 
     h = (void *)(b->data);
 
-    h->version = OFP_VERSION;
+    h->version = version;
     h->type = type;
     h->length = htons(len);
     h->xid = xid;
@@ -1904,7 +1905,8 @@ of_send_pkt_out_inline(void *arg, struct of_pkt_out_params *parms)
 
     cbuf_init_on_stack(&b, data, tot_len);
     of_prep_msg_on_stack(&b, tot_len, OFPT_PACKET_OUT, 
-                         (unsigned long)parms->data);
+                         (unsigned long)parms->data,
+                         OFP_VERSION);
 
     out = (void *)b.data;
     out->buffer_id = htonl(parms->buffer_id);
@@ -3165,7 +3167,8 @@ of131_send_pkt_out_inline(void *arg, struct of_pkt_out_params *parms)
 
     cbuf_init_on_stack(&b, data, tot_len);
     of_prep_msg_on_stack(&b, tot_len, OFPT131_PACKET_OUT, 
-                         (unsigned long)parms->data);
+                         (unsigned long)parms->data,
+                         OFP_VERSION_131);
 
     out = (void *)b.data;
     out->buffer_id = htonl(parms->buffer_id);
@@ -3361,8 +3364,9 @@ of131_recv_packet_in(c_switch_t *sw, struct cbuf *b)
     data = INC_PTR8(opi, pkt_ofs);
 
     if(!sw->fp_ops.fp_fwd ||
+        (pkt_len &&
         of_flow_extract(data, &fl[0], ntohl(fl[0].in_port), 
-                        pkt_len, only_l2) < 0) {
+                        pkt_len, only_l2) < 0)) {
         return;
     }
 
@@ -3371,7 +3375,14 @@ of131_recv_packet_in(c_switch_t *sw, struct cbuf *b)
     mdata.fl = &fl[0];
     mdata.pkt_ofs = pkt_ofs;
     mdata.pkt_len = pkt_len;
-    mdata.buffer_id = ntohl(opi->buffer_id);
+
+    /* If its because of flow miss or controller action,
+     * we already make sure we get the whole packet. Some
+     * switches can still send buffer-id along with whole
+     * packet causing confusion in our apps
+     */
+    mdata.buffer_id = opi->reason != OFPR_INVALID_TTL ?
+                        0xffffffff : ntohl(opi->buffer_id);
     
     sw->fp_ops.fp_fwd(sw, b, data, pkt_len, &mdata, ntohl(fl[0].in_port));
     return;

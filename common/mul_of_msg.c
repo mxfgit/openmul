@@ -1992,8 +1992,9 @@ of131_ofpx_match_to_flow(struct ofpx_match *ofx,
             mask->tp_dst = 0xffff;
             break;
         default:
-            if (!c_rlim(&rl))
-                c_log_err("%s: Unhandled OXM %u", FN, OFP_OXM_GHDR_FIELD(oxm)); 
+            /*if (!c_rlim(&rl))
+                c_log_err("%s: Unhandled OXM %u", FN, OFP_OXM_GHDR_FIELD(oxm));
+            */
             break;
         } 
 
@@ -2243,7 +2244,7 @@ of131_make_action_output(mul_act_mdata_t *mdata, uint32_t oport)
     op_act->port = htonl(oport);
 
     op_act->max_len = (oport == OFPP131_CONTROLLER) ? 
-                            htonl(OFPCML_NO_BUFFER) : htonl(OF_MAX_MISS_SEND_LEN);
+                            htons(OFPCML_NO_BUFFER) : htons(OF_MAX_MISS_SEND_LEN);
     mdata->act_wr_ptr += sizeof(*op_act);
     of131_fini_inst_actions(mdata);
     return (sizeof(*op_act));

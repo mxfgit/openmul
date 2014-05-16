@@ -88,7 +88,7 @@ c_l2fdb_install(c_switch_t *sw, c_l2fdb_ent_t *ent)
     ent->installed = 1;
     of_send_flow_add_direct(sw, &fl, &l2_fl_mask, (uint32_t)(-1),
                             mdata.act_base, act_len, 60, 0,
-                            C_FL_PRIO_DFL);
+                            C_FL_PRIO_FWD);
     return 0;
 }
 
@@ -100,7 +100,7 @@ c_l2fdb_uninstall(c_switch_t *sw, c_l2fdb_ent_t *ent)
     memcpy(&fl.dl_dst, ent->mac, OFP_ETH_ALEN);
     ent->installed = 0;
     of_send_flow_del_direct(sw, &fl, &l2_fl_mask,
-                            OFPP_NONE, false, C_FL_PRIO_DFL,
+                            OFPP_NONE, false, C_FL_PRIO_FWD,
                             OFPG_ANY);
     return 0;
 }
@@ -252,6 +252,7 @@ c_l2_lrn_fwd(c_switch_t *sw, struct cbuf *b UNUSED, void *data, size_t pkt_len,
     size_t act_len;
     struct of_pkt_out_params parms;
     struct flow *in_flow = pkt_mdata->fl;
+    uint32_t oport = OF_ALL_PORTS;
     mul_act_mdata_t mdata;
 
     mdata.act_base = actions;
@@ -274,11 +275,12 @@ c_l2_lrn_fwd(c_switch_t *sw, struct cbuf *b UNUSED, void *data, size_t pkt_len,
     if ((ent = c_l2fdb_lookup(sw, in_flow->dl_dst))) {
         sw->ofp_ctors->act_output(&mdata, ent->port);
         ent->installed = 1;
+        oport = ent->port;
         of_send_flow_add_direct(sw, in_flow, &l2_fl_mask,
                                 pkt_mdata->buffer_id,
                                 actions, of_mact_len(&mdata),
                                 10, 20, 
-                                C_FL_PRIO_DFL);
+                                C_FL_PRIO_FWD);
         if (pkt_mdata->buffer_id != (uint32_t)(-1)) {
             c_wr_unlock(&sw->lock);
             return 0;    
@@ -288,7 +290,7 @@ c_l2_lrn_fwd(c_switch_t *sw, struct cbuf *b UNUSED, void *data, size_t pkt_len,
 
     of_mact_mdata_reset(&mdata);
     mdata.only_acts = true;
-    act_len = sw->ofp_ctors->act_output(&mdata, OF_ALL_PORTS); 
+    act_len = sw->ofp_ctors->act_output(&mdata, oport); 
     parms.buffer_id = pkt_mdata->buffer_id;
     parms.action_len = act_len;
     parms.action_list  = mdata.act_base;
