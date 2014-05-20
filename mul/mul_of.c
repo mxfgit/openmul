@@ -3039,8 +3039,9 @@ c_switch_flow_table_enable(c_switch_t *sw, uint8_t table_id)
 
     if (!en) return;
 
+
     flow.table_id = table_id;
-    mask.table_id = table_id;
+    mask.table_id = 0xff;
 
     assert(sw->ofp_ctors->act_output);
 
@@ -3310,10 +3311,11 @@ of131_mpart_process(c_switch_t *sw, struct cbuf *b)
     case OFPMP_TABLE_FEATURES: 
         {
             struct ofp_table_features *ofp_tf = (void *)(ofp_mr->body);
-            size_t table_feat_len = ntohs(ofp_mr->header.length) - sizeof(*ofp_mr);
+            ssize_t table_feat_len = ntohs(ofp_mr->header.length) -
+                                        sizeof(*ofp_mr);
             loops = C_MAX_RULE_FLOW_TBLS;
 
-            while (table_feat_len && loops-- > 0) {
+            while (table_feat_len >= sizeof(*ofp_tf) && loops-- > 0) {
                 if (sw->ofp_priv_procs->proc_one_tbl_feature) {
                     sw->ofp_priv_procs->proc_one_tbl_feature(sw, (void *)ofp_tf);
                 }

@@ -1383,9 +1383,8 @@ c_app_per_switch_flow_info(void *k, void *v UNUSED, void *arg)
     if (sw->fp_ops.fp_db_dump) {
         /* FIXME : Chances of race condition */
         sw->fp_ops.fp_db_dump(sw, iter_arg, c_app_send_per_flow_info);
-    } else {
-        c_flow_traverse_tbl_all(sw, iter_arg, c_app_send_per_flow_info);
     }
+    c_flow_traverse_tbl_all(sw, iter_arg, c_app_send_per_flow_info);
 }
 
 static void 
