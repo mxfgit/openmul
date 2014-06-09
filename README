@@ -2,7 +2,7 @@
 
 1) Clone latest repo using git :
 
-   git clone git://git.code.sf.net/p/mul/code mul-code
+    $ git clone git@github.com:openmul/openmul.git
 
 
 * How to build MuL Controller on Ubuntu ?
@@ -11,7 +11,7 @@
 
     a) For Ubuntu 10.04.3 LTS, the following packages should be installed :
    
-       > sudo apt-get install flex bison libwxgtk2.6-dev build-essential 
+       $ sudo apt-get install flex bison libwxgtk2.6-dev build-essential 
          expect g++-multilib tofrodos zlib1g-dev gawk libffi-dev gettext
 
        Not verified with recent ubuntu versions but should work fine.
@@ -20,7 +20,7 @@
       (Please replace 64-bit packages with corresponding 32-bit ones if 
        underlying platform is 32-bit)
 
-      > yum install flex bison gettext wxGTK-devel.x86_64 wxGTK.x86_64 make
+      $ yum install flex bison gettext wxGTK-devel.x86_64 wxGTK.x86_64 make
         autoconf automake expect libstdc++-devel.x86_64 libstdc++.x86_64
         zlib-devel.x86_64 zlib.x86_64 gawk libffi-devel.x86_64
 
@@ -29,8 +29,8 @@
        i) There is a utility script which should configure and build these 
           packages(but will not install), just, do enough for mul compilation :
 
-        >  cd  SCRIPTS
-        >  ./configure_ext_libs 
+        $  cd  SCRIPTS
+        $  ./configure_ext_libs 
 
         OR, 
 
@@ -39,22 +39,22 @@
 2. Configure MuL 
 
     a) Run :
-        > cd <top-mul-dir>
-        > ./autogen.sh
+        $ cd <top-mul-dir>
+        $ ./autogen.sh
 
     b) If you used built-in script to download core packages, then one can 
        use the following:
 
-       > ./configure  --with-glib=`pwd`/common-libs/3rd-party/glib-2.32.0/ 
+       $ ./configure  --with-glib=`pwd`/common-libs/3rd-party/glib-2.32.0/ 
          --with-libevent=`pwd`/common-libs/3rd-party/libevent-2.0.21-stable/ 
         
     c) If you build and install glib and libevent separately, we can simply use:
-       > ./configure    ## Pass LDFLAGS and CFLAGS if these are installed in non-
+       $ ./configure    ## Pass LDFLAGS and CFLAGS if these are installed in non-
                         ## standard directories.
 
 3. Build MuL 
 
-   > make 
+   $ make 
 
 4. Executable will be built as <top-mul-dir>/mul/mul
 
@@ -67,7 +67,7 @@
 
 5. [Optional if you opt for modules to run as a separate process]
 
-    > cd application/l2switch/
+    $ cd application/l2switch/
 
     Executable :  mull2sw
 
@@ -77,9 +77,9 @@
     
     Mul provides an utility startup script for various use cases :  
      
-    > cd <top-mul-dir>
-    > ./mul.sh start l2switch   ## Run in l2switch mode
+    $ cd <top-mul-dir>
+    $ ./mul.sh start l2switch   ## Run in l2switch mode
     
     OR,
 
-    > ./mul.sh start fabric     ## Run in fabric 
+    $ ./mul.sh start fabric     ## Run in fabric 
