@@ -37,7 +37,8 @@ extern initcall_t __start_modvtyinit_sec, __stop_modvtyinit_sec;
 #define L2SW_APP_NAME "mul-l2sw"
 #define TR_APP_NAME "mul-tr"
 #define MAKDI_APP_NAME "mul-makdi"
-#define MUL_MAX_SERVICE_NUM 5
+#define HELLO_APP_NAME "mul-hello"
+#define MUL_MAX_SERVICE_NUM 6
 
 /* Controller app event notifications */
 typedef enum c_app_event {

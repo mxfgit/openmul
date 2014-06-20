@@ -369,16 +369,9 @@ l2sw_module_init(void *base_arg)
     l2sw_timer_event = evtimer_new(base, l2sw_main_timer, NULL); 
     evtimer_add(l2sw_timer_event, &tv);
 
-#if 0
-    mul_register_app(NULL, L2SW_APP_NAME, 
-                     C_APP_ALL_SW, C_APP_ALL_EVENTS,
-                     0, NULL, l2sw_event_notifier);
-#else
     mul_register_app_cb(NULL, L2SW_APP_NAME, 
                         C_APP_ALL_SW, C_APP_ALL_EVENTS,
                         0, NULL, &l2sw_app_cbs);
-
-#endif
 
     return;
 }
